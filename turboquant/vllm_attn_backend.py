@@ -1,15 +1,28 @@
 """
-TurboQuant attention backend shim for vLLM v0.17+.
+TurboQuant attention backend shim — DEPRECATED.
 
-Delegates to turboquant.integration.vllm for all real logic.
-Kept for backward compatibility with scripts that import from here.
+This module exists only for backwards compatibility with scripts that import
+``install_turboquant_hooks``, ``MODE_ACCUMULATE``/``MODE_ACTIVE``, etc.
+New code should use the canonical, supported API:
+
+    from turboquant.vllm import enable_turboquant, free_kv_cache, get_stats
+
+The legacy mode names (``shadow``, ``accumulate``, ``active``) and the
+``buffer_size`` parameter name are kept aliases of the new mode names
+(``capture_only``, ``hybrid``) and ``ring_capacity``.
+
+``enable_no_alloc`` is the only function here that has no canonical replacement
+yet; it monkey-patches private vLLM v1 internals (``Executor.get_kv_cache_specs``,
+``GPUModelRunner._update_hybrid_attention_mamba_layout``, ``GPUWorker.load_model``)
+to install hooks during engine initialization. It remains experimental — expect
+breakage on any vLLM version bump.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import torch
+import warnings
 
 import turboquant.integration.vllm as _new_backend
 
@@ -17,6 +30,8 @@ _DEBUG_LOG = os.environ.get("TURBOQUANT_DEBUG_LOG")  # set to a file path to ena
 
 logger = logging.getLogger("turboquant.attn")
 
+# ---- Legacy mode constants -------------------------------------------------
+# These map onto the canonical modes in turboquant.integration.vllm.
 MODE_SHADOW = "shadow"
 MODE_ACCUMULATE = "accumulate"
 MODE_ACTIVE = "active"
@@ -31,7 +46,20 @@ _LEGACY_TO_NEW = {
 _GLOBAL_MODE = MODE_ACCUMULATE
 
 
-def set_mode(mode: str):
+def _deprecation(what: str, replacement: str) -> None:
+    warnings.warn(
+        f"{what} is deprecated; use {replacement} instead.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+
+
+def set_mode(mode: str) -> None:
+    """Deprecated. Use ``turboquant.integration.vllm.set_mode`` directly."""
+    _deprecation(
+        "turboquant.vllm_attn_backend.set_mode",
+        "turboquant.integration.vllm.set_mode",
+    )
     global _GLOBAL_MODE
     assert mode in _VALID_MODES
     _GLOBAL_MODE = mode
@@ -53,6 +81,17 @@ def install_turboquant_hooks(
     mode: str = MODE_ACCUMULATE,
     no_alloc: bool = False,
 ):
+    """Deprecated. Use ``turboquant.vllm.enable_turboquant(llm, ...)``.
+
+    This function still works — it forwards to
+    ``turboquant.integration.vllm.install_hooks`` — but ``enable_turboquant``
+    handles the worker fan-out and version checks for you instead of
+    requiring you to traverse vLLM's private engine-core path yourself.
+    """
+    _deprecation(
+        "install_turboquant_hooks",
+        "turboquant.vllm.enable_turboquant(llm, ...)",
+    )
     global _GLOBAL_MODE
     new_mode = _LEGACY_TO_NEW.get(mode, _new_backend.MODE_CAPTURE_ONLY)
 
@@ -69,10 +108,28 @@ def install_turboquant_hooks(
     )
 
     _GLOBAL_MODE = mode
+    # Mirror the canonical attribute under its old name for any caller still
+    # reaching for `_tq_states`. New code should read `_tq_layer_states`.
     model_runner._tq_states = layer_states
     model_runner._tq_no_alloc = no_alloc
     return layer_states
 
+
+def free_kv_cache(model_runner) -> int:
+    """Free paged KV cache tensors for TQ-hooked layers.
+
+    Thin delegator to ``turboquant.integration.vllm.free_kv_cache``. The
+    canonical install path (``install_hooks``) sets
+    ``model_runner._tq_layer_states``, which the canonical implementation
+    consumes; the legacy ``_tq_states`` fallback that used to live here was
+    dead code (``install_turboquant_hooks`` populates *both* attributes).
+    """
+    return _new_backend.free_kv_cache(model_runner)
+
+
+# ---- Experimental no-alloc auto-installer ---------------------------------
+# Kept here because it has no equivalent in integration/vllm.py and at least
+# proof.py / benchmark.py rely on importing it from this module.
 
 _TQ_NO_ALLOC_CONFIG = None
 
@@ -83,8 +140,14 @@ def enable_no_alloc(
     buffer_size: int = 128,
     initial_layers_count: int = 4,
 ):
-    """Call BEFORE creating vllm.LLM(). Patches the executor so TQ hooks
-    are installed automatically during engine initialization."""
+    """Call BEFORE creating ``vllm.LLM(...)``.
+
+    Patches ``vllm.v1.executor.abstract.Executor.get_kv_cache_specs``,
+    ``GPUModelRunner._update_hybrid_attention_mamba_layout``, and
+    ``GPUWorker.load_model`` so TQ hooks are installed automatically during
+    engine initialization. Experimental — depends on private vLLM v1 internals
+    and is likely to break on version bumps.
+    """
     global _TQ_NO_ALLOC_CONFIG
     _TQ_NO_ALLOC_CONFIG = dict(
         key_bits=key_bits,
@@ -125,18 +188,23 @@ def enable_no_alloc(
             return orig_get_specs(self)
 
         def _worker_install_tq(worker):
-            from turboquant.vllm_attn_backend import (
-                install_turboquant_hooks, MODE_ACTIVE
-            )
-            tq_states = install_turboquant_hooks(
-                worker.model_runner,
-                key_bits=cfg["key_bits"],
-                value_bits=cfg["value_bits"],
-                buffer_size=cfg["buffer_size"],
-                initial_layers_count=cfg["initial_layers_count"],
-                mode=MODE_ACTIVE,
-                no_alloc=True,
-            )
+            # Note: we call the (deprecated) shim here because we want the
+            # `_tq_states` attribute set on the model runner for the legacy
+            # callers that still read it. New code should never hit this path.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                from turboquant.vllm_attn_backend import (
+                    install_turboquant_hooks, MODE_ACTIVE,
+                )
+                tq_states = install_turboquant_hooks(
+                    worker.model_runner,
+                    key_bits=cfg["key_bits"],
+                    value_bits=cfg["value_bits"],
+                    buffer_size=cfg["buffer_size"],
+                    initial_layers_count=cfg["initial_layers_count"],
+                    mode=MODE_ACTIVE,
+                    no_alloc=True,
+                )
             static_ctx = worker.model_runner.compilation_config.static_forward_context
             flash_layers = [
                 name
@@ -164,17 +232,15 @@ def enable_no_alloc(
 
         try:
             hooks = self.collective_rpc(_worker_install_tq)
-            print(f"[TurboQuant] Installed no_alloc hooks: {hooks}", flush=True)
-        except Exception as e:
-            import traceback
-            print(f"[TurboQuant] collective_rpc FAILED: {e}", flush=True)
-            traceback.print_exc()
+            logger.info("[TurboQuant] Installed no_alloc hooks: %s", hooks)
+        except Exception as exc:
+            logger.exception("[TurboQuant] collective_rpc failed: %s", exc)
         return orig_get_specs(self)
 
     Executor.get_kv_cache_specs = patched_get_kv_cache_specs
     Executor._tq_patched = True
 
-    # Patch the worker's load_model (NOT decorated, so our patch won't be bypassed)
+    # Patch the worker's load_model (NOT decorated, so our patch isn't bypassed)
     try:
         from vllm.v1.worker.gpu_worker import GPUWorker as WorkerCls
     except ImportError:
@@ -191,79 +257,27 @@ def enable_no_alloc(
             cfg = _TQ_NO_ALLOC_CONFIG
             if cfg:
                 try:
-                    from turboquant.vllm_attn_backend import install_turboquant_hooks, MODE_ACCUMULATE
-                    tq = install_turboquant_hooks(
-                        self_worker.model_runner,
-                        key_bits=cfg["key_bits"],
-                        value_bits=cfg["value_bits"],
-                        buffer_size=cfg["buffer_size"],
-                        initial_layers_count=cfg["initial_layers_count"],
-                        mode=MODE_ACCUMULATE,
-                        no_alloc=False,
-                    )
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", DeprecationWarning)
+                        from turboquant.vllm_attn_backend import (
+                            install_turboquant_hooks, MODE_ACCUMULATE,
+                        )
+                        tq = install_turboquant_hooks(
+                            self_worker.model_runner,
+                            key_bits=cfg["key_bits"],
+                            value_bits=cfg["value_bits"],
+                            buffer_size=cfg["buffer_size"],
+                            initial_layers_count=cfg["initial_layers_count"],
+                            mode=MODE_ACCUMULATE,
+                            no_alloc=False,
+                        )
                     if _DEBUG_LOG:
                         with open(_DEBUG_LOG, "a") as f:
                             f.write(f"TQ hooks: {len(tq)} layers pid={os.getpid()}\n")
                             f.flush()
-                except Exception as e:
-                    logger.exception("[TurboQuant] worker load_model TQ install failed: %s", e)
-                    if _DEBUG_LOG:
-                        import traceback
-                        with open(_DEBUG_LOG, "a") as f:
-                            f.write(f"TQ FAIL pid={os.getpid()}: {e}\n")
-                            traceback.print_exc(file=f)
-                            f.flush()
+                except Exception as exc:
+                    logger.exception("[TurboQuant] worker load_model TQ install failed: %s", exc)
 
         WorkerCls.load_model = patched_worker_load
 
     logger.info("[TurboQuant] Patched Executor for auto TQ hook installation")
-
-
-def free_kv_cache(model_runner):
-    """Free paged KV cache for TQ-hooked layers."""
-    if getattr(model_runner, "_tq_layer_states", None):
-        return _new_backend.free_kv_cache(model_runner)
-
-    layer_states = getattr(model_runner, "_tq_states", None)
-    if not layer_states:
-        return 0
-
-    static_ctx = model_runner.compilation_config.static_forward_context
-    device = model_runner.device
-    freed = 0
-    tiny = torch.zeros(1, dtype=torch.int8, device=device)
-
-    ptrs_to_free = set()
-    for layer_name, state in layer_states.items():
-        if not getattr(state, "supports_hybrid", False):
-            continue
-        attn_module = static_ctx.get(layer_name)
-        if attn_module is None:
-            continue
-        kv_list = getattr(attn_module, "kv_cache", None)
-        if kv_list and len(kv_list) > 0 and hasattr(kv_list[0], "data_ptr"):
-            ptrs_to_free.add(kv_list[0].data_ptr())
-
-    for layer_name, state in layer_states.items():
-        if not getattr(state, "supports_hybrid", False):
-            continue
-        attn_module = static_ctx.get(layer_name)
-        if attn_module is None:
-            continue
-        kv_list = getattr(attn_module, "kv_cache", None)
-        if kv_list and len(kv_list) > 0:
-            old = kv_list[0]
-            freed += old.nelement() * old.element_size()
-            kv_list[0] = tiny
-
-    for i in range(len(model_runner.kv_caches)):
-        entry = model_runner.kv_caches[i]
-        if isinstance(entry, list):
-            for j in range(len(entry)):
-                if hasattr(entry[j], "data_ptr") and entry[j].data_ptr() in ptrs_to_free:
-                    entry[j] = tiny
-        elif hasattr(entry, "data_ptr") and entry.data_ptr() in ptrs_to_free:
-            model_runner.kv_caches[i] = tiny
-
-    torch.cuda.empty_cache()
-    return freed

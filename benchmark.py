@@ -15,14 +15,17 @@ MODELS = {
     "Qwen2.5-7B-Instruct": {
         "path": "/mnt/llm_models/Qwen2.5-7B-Instruct",
         "tp": 2, "gpu_mem": 0.90, "max_model_len": 32768,
-        "block_size": 16, "dtype": "bfloat16",
+        "dtype": "bfloat16",
     },
     "Qwen3.5-27B": {
         "path": "/mnt/llm_models/Qwen3.5-27B",
         "tp": 4, "gpu_mem": 0.90, "max_model_len": 131072,
-        "block_size": 784, "dtype": "bfloat16",
+        "dtype": "bfloat16",
     },
 }
+# block_size is read from the live engine's cache_config at runtime
+# (cache_config.block_size). Hardcoding it produces wrong "context length"
+# numbers when the model or vLLM defaults change.
 
 PROMPT = "Explain how KV cache compression works in large language model inference."
 QUALITY_PROMPT = "Answer precisely: 1) Capital of France? 2) 17*23? 3) Who wrote Romeo and Juliet? 4) Chemical formula for water? 5) Year WWII ended?"
@@ -62,7 +65,9 @@ def main():
     llm = LLM(model="{m['path']}", dtype="{m['dtype']}", gpu_memory_utilization={m['gpu_mem']},
         max_model_len={m['max_model_len']}, tensor_parallel_size={m['tp']},
         trust_remote_code=True, max_num_seqs=1)
-    blocks = llm.llm_engine.vllm_config.cache_config.num_gpu_blocks
+    cache_cfg = llm.llm_engine.vllm_config.cache_config
+    blocks = cache_cfg.num_gpu_blocks
+    block_size = cache_cfg.block_size
 
     # Throughput
     t0 = time.perf_counter()
@@ -79,7 +84,8 @@ def main():
         capture_output=True, text=True)
     vram = [int(l.split(",")[1].strip()) for l in r.stdout.strip().split("\\n") if l.strip()]
 
-    print(json.dumps({{"blocks": blocks, "toks": toks, "elapsed": round(t1-t0,3),
+    print(json.dumps({{"blocks": blocks, "block_size": block_size,
+        "toks": toks, "elapsed": round(t1-t0,3),
         "tps": round(toks/(t1-t0),1), "vram": vram, "text": text, "quality": quality}}))
 
 if __name__ == "__main__":
@@ -98,7 +104,9 @@ def main():
     llm = LLM(model="{m['path']}", dtype="{m['dtype']}", gpu_memory_utilization={m['gpu_mem']},
         max_model_len={m['max_model_len']}, tensor_parallel_size={m['tp']},
         trust_remote_code=True, max_num_seqs=1)
-    blocks = llm.llm_engine.vllm_config.cache_config.num_gpu_blocks
+    cache_cfg = llm.llm_engine.vllm_config.cache_config
+    blocks = cache_cfg.num_gpu_blocks
+    block_size = cache_cfg.block_size
 
     engine = llm.llm_engine
     core = getattr(engine, "engine_core", engine)
@@ -143,7 +151,8 @@ def main():
         capture_output=True, text=True)
     vram_freed = [int(l.split(",")[1].strip()) for l in r2.stdout.strip().split("\\n") if l.strip()]
 
-    print(json.dumps({{"blocks": blocks, "hooks": hooks[0], "toks": toks,
+    print(json.dumps({{"blocks": blocks, "block_size": block_size,
+        "hooks": hooks[0], "toks": toks,
         "elapsed": round(t1-t0,3), "tps": round(toks/(t1-t0),1),
         "vram_gen": vram_gen, "vram_freed": vram_freed, "freed": freed,
         "text": text, "quality": quality}}))
@@ -155,7 +164,6 @@ if __name__ == "__main__":
 
 def run_model(name, m):
     n = m["tp"]
-    bs = m["block_size"]
 
     print(f"\\n{'#'*60}")
     print(f"# {name} (TP={n})")
@@ -169,6 +177,12 @@ def run_model(name, m):
     print("  TurboQuant ...", flush=True)
     tq = run_script(f"tq_{name}", tq_code(m))
     if not tq:
+        return None
+
+    # Block size comes from the live engine; both phases load the same model.
+    bs = bl.get("block_size") or tq.get("block_size")
+    if not bs:
+        print(f"  ERROR: block_size missing from phase outputs")
         return None
 
     freed_per = tq["freed"][0]

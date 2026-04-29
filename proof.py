@@ -55,7 +55,9 @@ def main():
         tensor_parallel_size={TP},
         trust_remote_code=True, max_num_seqs=1,
     )
-    blocks = llm.llm_engine.vllm_config.cache_config.num_gpu_blocks
+    cache_cfg = llm.llm_engine.vllm_config.cache_config
+    blocks = cache_cfg.num_gpu_blocks
+    block_size = cache_cfg.block_size
 
     r = subprocess.run(["nvidia-smi","--query-gpu=index,memory.used","--format=csv,noheader,nounits"],
         capture_output=True, text=True)
@@ -68,7 +70,8 @@ def main():
         capture_output=True, text=True)
     vram2 = [int(l.split(",")[1].strip()) for l in r2.stdout.strip().split("\\n") if l.strip()]
 
-    print(json.dumps({{"blocks": blocks, "vram_load": vram, "vram_gen": vram2,
+    print(json.dumps({{"blocks": blocks, "block_size": block_size,
+        "vram_load": vram, "vram_gen": vram2,
         "text": out[0].outputs[0].text[:100]}}))
 
 if __name__ == "__main__":
@@ -91,7 +94,9 @@ def main():
         tensor_parallel_size={TP},
         trust_remote_code=True, max_num_seqs=1,
     )
-    blocks = llm.llm_engine.vllm_config.cache_config.num_gpu_blocks
+    cache_cfg = llm.llm_engine.vllm_config.cache_config
+    blocks = cache_cfg.num_gpu_blocks
+    block_size = cache_cfg.block_size
 
     engine = llm.llm_engine
     core = getattr(engine, "engine_core", engine)
@@ -120,7 +125,8 @@ def main():
         capture_output=True, text=True)
     vram_freed = [int(l.split(",")[1].strip()) for l in r2.stdout.strip().split("\\n") if l.strip()]
 
-    print(json.dumps({{"blocks": blocks, "hooks": hooks[0], "vram_gen": vram_gen,
+    print(json.dumps({{"blocks": blocks, "block_size": block_size,
+        "hooks": hooks[0], "vram_gen": vram_gen,
         "vram_freed": vram_freed, "freed_bytes": freed,
         "text": out[0].outputs[0].text[:100]}}))
 
@@ -153,10 +159,16 @@ def main():
     freed_total = sum(tq["freed_bytes"])
     freed_per = tq["freed_bytes"][0]
 
-    block_size = 784  # Qwen3.5-27B: attention block aligned to mamba
+    # Block size is read from the live engine's cache config; the two phases
+    # use the same model so they should agree. Fall back to baseline if the
+    # TQ phase didn't report it (older script).
+    block_size = bl.get("block_size") or tq.get("block_size")
+    if not block_size:
+        raise RuntimeError("block_size missing from both phase outputs")
     bl_tokens = bl["blocks"] * block_size
-    # Extra capacity from freed KV cache
-    # full_attn: 16 layers, kv_heads=1/gpu, head_dim=256, bf16=2, K+V=2
+    # Rough extra capacity from freed KV cache. The per-block byte count is
+    # specific to the dense full-attention layers TQ replaces; this is a
+    # back-of-envelope figure, not an authoritative one.
     bytes_per_block_full = 2 * 1 * 256 * 2 * block_size * tq["hooks"]
     extra_blocks = int(freed_per / max(bytes_per_block_full, 1))
     new_tokens = bl_tokens + extra_blocks * block_size
