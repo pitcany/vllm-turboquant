@@ -11,8 +11,9 @@ Design rule: no per-token quantization on the hot decode path.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Optional
+
 import torch
-from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from turboquant.store import CompressedKVStore

@@ -8,3 +8,18 @@ markers = [
 filterwarnings = [
     "ignore::DeprecationWarning:torch",
 ]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = ["build", "dist", ".eggs", "*.egg-info"]
+
+[tool.ruff.lint]
+# Conservative starter ruleset: pyflakes + import sorting + stylistic basics.
+# Tighten over time; for now we just want CI to catch real bugs (F821, F401)
+# and keep imports sane.
+select = ["E", "W", "F", "I"]
+ignore = [
+    "E501",  # line too long — handled by formatter, noisy on existing code
+    "E722",  # bare except — present in subprocess wrappers, fix later
+]

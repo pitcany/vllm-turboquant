@@ -6,7 +6,10 @@ Tests: VRAM, throughput (tok/s), quality, context capacity.
 Usage:
     CUDA_VISIBLE_DEVICES=0,1,4,6 MODEL=Qwen3.5-27B python benchmark.py
 """
-import os, sys, subprocess, json, time
+import json
+import os
+import subprocess
+import sys
 
 PYTHON = sys.executable
 GPUS = os.environ.get("CUDA_VISIBLE_DEVICES", "0,1,4,6")
@@ -42,9 +45,9 @@ def run_script(name, code):
     r = subprocess.run([PYTHON, path], capture_output=True, text=True, env=env, timeout=600)
     if r.returncode != 0:
         print(f"  {name} FAILED")
-        for l in r.stderr.split("\n"):
-            if "Error" in l and "Warning" not in l and "Future" not in l:
-                print(f"    {l.strip()}")
+        for line in r.stderr.split("\n"):
+            if "Error" in line and "Warning" not in line and "Future" not in line:
+                print(f"    {line.strip()}")
         return None
     for line in reversed(r.stdout.strip().split("\n")):
         try:
@@ -182,35 +185,32 @@ def run_model(name, m):
     # Block size comes from the live engine; both phases load the same model.
     bs = bl.get("block_size") or tq.get("block_size")
     if not bs:
-        print(f"  ERROR: block_size missing from phase outputs")
+        print("  ERROR: block_size missing from phase outputs")
         return None
 
     freed_per = tq["freed"][0]
     freed_total = sum(tq["freed"])
 
     bl_tokens = bl["blocks"] * bs
-    # Estimate extra capacity from freed bytes
-    # Very rough: freed_per / (page_size_per_block * tq_layers)
-    extra_blocks = int(freed_per / max(bl_tokens * 2, 1))  # rough estimate
 
     print(f"\\n  {'='*56}")
-    print(f"  VRAM")
+    print("  VRAM")
     print(f"    Baseline:      {bl['vram'][:n]} MB/GPU")
     print(f"    TQ after gen:  {tq['vram_gen'][:n]} MB/GPU")
     print(f"    TQ after free: {tq['vram_freed'][:n]} MB/GPU")
     print(f"    Freed/GPU:     {freed_per/1e6:.0f} MB")
     print(f"    Total freed:   {freed_total/1e6:.0f} MB ({freed_total/1e9:.1f} GB)")
-    print(f"  THROUGHPUT")
+    print("  THROUGHPUT")
     print(f"    Baseline:      {bl['tps']} tok/s ({bl['toks']} tokens, {bl['elapsed']}s)")
     print(f"    TQ:            {tq['tps']} tok/s ({tq['toks']} tokens, {tq['elapsed']}s)")
     print(f"    Ratio:         {tq['tps']/max(bl['tps'],0.1):.2f}x")
-    print(f"  CONTEXT")
+    print("  CONTEXT")
     print(f"    Baseline:      {bl_tokens:,} tokens ({bl['blocks']} blocks x {bs})")
     print(f"    TQ layers:     {tq['hooks']}")
-    print(f"  QUALITY")
+    print("  QUALITY")
     print(f"    Baseline: {bl['quality'][:200]}")
     print(f"    TQ:       {tq['quality'][:200]}")
-    print(f"  OUTPUT")
+    print("  OUTPUT")
     print(f"    Baseline: {bl['text'][:150]}")
     print(f"    TQ:       {tq['text'][:150]}")
     print(f"  {'='*56}")

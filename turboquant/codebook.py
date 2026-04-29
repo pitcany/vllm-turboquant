@@ -10,11 +10,11 @@ For high d, this converges to N(0, 1/d).
 We solve the continuous 1D k-means (Lloyd-Max) to find optimal centroids.
 """
 
-import math
-import os
 import json
-import torch
+import os
+
 import numpy as np
+import torch
 from scipy import integrate, special
 
 

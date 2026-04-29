@@ -6,16 +6,17 @@ These operate on tensors of shape (..., d) where d is the embedding dimension
 """
 
 import math
+from typing import NamedTuple
+
 import torch
 import torch.nn.functional as F
-from typing import Optional, Tuple, NamedTuple
 
 from turboquant.codebook import get_codebook_tensors
 from turboquant.rotation import (
-    generate_rotation_matrix,
     generate_qjl_matrix,
-    rotate_forward,
+    generate_rotation_matrix,
     rotate_backward,
+    rotate_forward,
 )
 
 

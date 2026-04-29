@@ -12,14 +12,16 @@ to justify it (>= 16 tokens).
 
 from __future__ import annotations
 
-import math
 import logging
+import math
+from typing import Optional
+
 import torch
 import torch.nn.functional as F
 
-from turboquant.store import FlatCache, CompressedKVStore
 from turboquant.kv_cache import dequantize_values
 from turboquant.quantizer import TurboQuantProd
+from turboquant.store import CompressedKVStore, FlatCache
 
 logger = logging.getLogger("turboquant.score")
 

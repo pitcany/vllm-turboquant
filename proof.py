@@ -5,7 +5,10 @@ TurboQuant definitive proof. Two separate subprocesses:
   2. TurboQuant + free_kv_cache
 Hard numbers side by side.
 """
-import os, sys, subprocess, json
+import json
+import os
+import subprocess
+import sys
 
 MODEL = os.environ.get("MODEL", "Qwen/Qwen3.5-27B")
 TP = int(os.environ.get("TP", "4"))
@@ -178,7 +181,7 @@ def main():
     print(f"  MODEL: {MODEL}")
     print(f"  TP={TP}, max_model_len={MAX_MODEL_LEN}, gpu_mem={GPU_MEM}")
     print()
-    print(f"  BASELINE (vanilla vLLM)")
+    print("  BASELINE (vanilla vLLM)")
     print(f"    KV cache blocks:         {bl['blocks']}")
     print(f"    Max tokens:              {bl_tokens:,}")
     print(f"    VRAM/GPU after gen:      {bl_v} MB")
@@ -190,14 +193,14 @@ def main():
     print(f"    Tensor freed/GPU:        {freed_per/1e6:.0f} MB")
     print(f"    Total tensor freed:      {freed_total/1e6:.0f} MB ({freed_total/1e9:.1f} GB)")
     print()
-    print(f"  RESULT")
+    print("  RESULT")
     print(f"    KV VRAM saved/GPU:       {freed_per/1e6:.0f} MB")
     print(f"    Extra blocks possible:   {extra_blocks}")
     print(f"    Baseline capacity:       {bl_tokens:,} tokens")
     print(f"    With TQ capacity:        {new_tokens:,} tokens")
     print(f"    Improvement:             {new_tokens/bl_tokens:.2f}x context length")
     print()
-    print(f"  OUTPUT COMPARISON")
+    print("  OUTPUT COMPARISON")
     print(f"    Baseline: {bl['text']}")
     print(f"    TQ:       {tq['text']}")
     print("=" * 70)

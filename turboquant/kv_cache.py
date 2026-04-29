@@ -12,9 +12,11 @@ The design follows the pattern from QJL but is model-agnostic.
 """
 
 import math
+from typing import NamedTuple, Optional
+
 import torch
-from typing import Optional, NamedTuple
-from turboquant.quantizer import TurboQuantProd, ProdQuantized
+
+from turboquant.quantizer import ProdQuantized, TurboQuantProd
 
 
 class ValueQuantized(NamedTuple):

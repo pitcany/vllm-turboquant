@@ -10,7 +10,6 @@ For typical head_dim (64-256), full QR is fine. The matrix is shared
 across all heads in a layer and generated once from a fixed seed per layer.
 """
 
-import math
 import torch
 
 

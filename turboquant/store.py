@@ -9,11 +9,12 @@ Design rules:
 
 from __future__ import annotations
 
-import torch
-from typing import Optional, NamedTuple
+from typing import NamedTuple, Optional
 
-from turboquant.quantizer import TurboQuantProd, ProdQuantized
-from turboquant.kv_cache import quantize_values, ValueQuantized
+import torch
+
+from turboquant.kv_cache import ValueQuantized, quantize_values
+from turboquant.quantizer import ProdQuantized, TurboQuantProd
 
 
 class FlatCache(NamedTuple):

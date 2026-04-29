@@ -43,6 +43,7 @@ PROMPT = "Briefly explain how KV cache compression speeds up LLM inference."
 def _no_vllm_path() -> int:
     """Exercise just the quantizer math; useful on machines without GPU/vLLM."""
     import torch
+
     from turboquant import TurboQuantMSE, TurboQuantProd
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

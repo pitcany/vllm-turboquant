@@ -16,18 +16,17 @@ Modes:
 
 from __future__ import annotations
 
-import math
 import logging
+import math
 import types
 from dataclasses import dataclass, field
-from typing import Optional
 
 import torch
 import torch.nn.functional as F
 
 from turboquant.capture import KVCaptureEngine
-from turboquant.store import CompressedKVStore
 from turboquant.score import compute_hybrid_attention
+from turboquant.store import CompressedKVStore
 
 logger = logging.getLogger("turboquant.integration.vllm")
 
@@ -183,7 +182,7 @@ def _no_alloc_prefill_attention(
 def _make_patched_forward(orig_fn, state: LayerState, no_alloc: bool = False,
                           capture_in_forward: bool = False):
     """Intercept forward to optionally use TQ decode.
-    
+
     If capture_in_forward=True, also capture K/V from forward args
     (needed when the backend has no separate do_kv_cache_update method).
     """

@@ -194,7 +194,8 @@ def enable_no_alloc(
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", DeprecationWarning)
                 from turboquant.vllm_attn_backend import (
-                    install_turboquant_hooks, MODE_ACTIVE,
+                    MODE_ACTIVE,
+                    install_turboquant_hooks,
                 )
                 tq_states = install_turboquant_hooks(
                     worker.model_runner,
@@ -260,7 +261,8 @@ def enable_no_alloc(
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore", DeprecationWarning)
                         from turboquant.vllm_attn_backend import (
-                            install_turboquant_hooks, MODE_ACCUMULATE,
+                            MODE_ACCUMULATE,
+                            install_turboquant_hooks,
                         )
                         tq = install_turboquant_hooks(
                             self_worker.model_runner,

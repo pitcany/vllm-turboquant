@@ -14,7 +14,6 @@ import torch
 
 from turboquant import TurboQuantMSE, TurboQuantProd
 
-
 # Loose quality floors per bit budget. These are well below what a healthy
 # Lloyd-Max/QJL pipeline produces but high enough that a real regression
 # (e.g. broken centroid lookup, miswired rotation matrix, off-by-one in

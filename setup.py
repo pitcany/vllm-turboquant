@@ -1,13 +1,14 @@
-from setuptools import setup, find_packages
+from setuptools import find_packages, setup
 
 setup(
     name="turboquant",
-    version="0.1.0",
-    description="TurboQuant: Near-optimal KV cache quantization for LLM inference",
+    version="0.2.1",
+    description="TurboQuant: Near-optimal KV cache quantization for LLM inference (vLLM integration)",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
-    author="Implementation based on Zandieh et al. (ICLR 2026)",
-    url="https://github.com/0xSero/turboquant",
+    author="pitcany",
+    url="https://github.com/pitcany/vllm-turboquant",
+    license="GPL-3.0-or-later",
     packages=find_packages(),
     package_data={"turboquant": ["codebooks/*.json"]},
     python_requires=">=3.10",
