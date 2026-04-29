@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  unit-tests:
+    name: pytest (unit, ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install package + test extras (CPU torch)
+        run: |
+          python -m pip install --upgrade pip
+          # CPU-only torch wheel to avoid pulling the multi-GB CUDA build
+          pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.1"
+          pip install -e .[test]
+
+      - name: Show env
+        run: |
+          python --version
+          pip list | grep -E "^(torch|numpy|scipy|pytest|turboquant) "
+
+      - name: Run unit tests (CPU only)
+        run: pytest -m unit -ra
