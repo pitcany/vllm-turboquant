@@ -1,0 +1,10 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "unit: fast, no GPU/vLLM required",
+    "integration: requires vLLM and/or a GPU",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:torch",
+]

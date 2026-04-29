@@ -17,9 +17,9 @@ setup(
         "scipy",
     ],
     extras_require={
-        "vllm": ["vllm>=0.16"],
+        "vllm": ["vllm>=0.17,<0.19"],
         "triton": ["triton>=3.0"],
-        "test": ["pytest"],
+        "test": ["pytest>=7"],
     },
     classifiers=[
         "Development Status :: 3 - Alpha",
