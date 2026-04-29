@@ -8,9 +8,12 @@ Kept for backward compatibility with scripts that import from here.
 from __future__ import annotations
 
 import logging
+import os
 import torch
 
 import turboquant.integration.vllm as _new_backend
+
+_DEBUG_LOG = os.environ.get("TURBOQUANT_DEBUG_LOG")  # set to a file path to enable
 
 logger = logging.getLogger("turboquant.attn")
 
@@ -114,9 +117,10 @@ def enable_no_alloc(
 
     def patched_get_kv_cache_specs(self):
         cfg = _TQ_NO_ALLOC_CONFIG
-        with open("/tmp/tq_debug.log", "a") as f:
-            f.write(f"patched_get_kv_cache_specs called pid={os.getpid()} cfg={cfg is not None}\n")
-            f.flush()
+        if _DEBUG_LOG:
+            with open(_DEBUG_LOG, "a") as f:
+                f.write(f"patched_get_kv_cache_specs called pid={os.getpid()} cfg={cfg is not None}\n")
+                f.flush()
         if cfg is None:
             return orig_get_specs(self)
 
@@ -187,8 +191,6 @@ def enable_no_alloc(
             cfg = _TQ_NO_ALLOC_CONFIG
             if cfg:
                 try:
-                    import sys
-                    sys.path.insert(0, '/tmp')
                     from turboquant.vllm_attn_backend import install_turboquant_hooks, MODE_ACCUMULATE
                     tq = install_turboquant_hooks(
                         self_worker.model_runner,
@@ -199,15 +201,18 @@ def enable_no_alloc(
                         mode=MODE_ACCUMULATE,
                         no_alloc=False,
                     )
-                    with open("/tmp/tq_debug.log", "a") as f:
-                        f.write(f"TQ hooks: {len(tq)} layers pid={os.getpid()}\n")
-                        f.flush()
+                    if _DEBUG_LOG:
+                        with open(_DEBUG_LOG, "a") as f:
+                            f.write(f"TQ hooks: {len(tq)} layers pid={os.getpid()}\n")
+                            f.flush()
                 except Exception as e:
-                    with open("/tmp/tq_debug.log", "a") as f:
+                    logger.exception("[TurboQuant] worker load_model TQ install failed: %s", e)
+                    if _DEBUG_LOG:
                         import traceback
-                        f.write(f"TQ FAIL pid={os.getpid()}: {e}\n")
-                        traceback.print_exc(file=f)
-                        f.flush()
+                        with open(_DEBUG_LOG, "a") as f:
+                            f.write(f"TQ FAIL pid={os.getpid()}: {e}\n")
+                            traceback.print_exc(file=f)
+                            f.flush()
 
         WorkerCls.load_model = patched_worker_load
 

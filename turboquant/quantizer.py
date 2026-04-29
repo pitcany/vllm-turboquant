@@ -110,7 +110,9 @@ class TurboQuantMSE(torch.nn.Module):
         self.dim = dim
         self.bits = bits
         self.n_clusters = 2**bits
-        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if device is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device
 
         # Precompute rotation matrix
         self.register_buffer(
@@ -132,6 +134,9 @@ class TurboQuantMSE(torch.nn.Module):
 
         Returns MSEQuantized with bit-packed indices and norms.
         """
+        if x.device != self.Pi.device:
+            self.to(x.device)
+
         # Store norms for rescaling
         norms = x.norm(dim=-1, keepdim=False)
         # Normalize to unit sphere
@@ -194,7 +199,9 @@ class TurboQuantProd(torch.nn.Module):
         super().__init__()
         self.dim = dim
         self.bits = bits
-        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if device is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device
 
         assert bits >= 2, "Inner product TurboQuant requires at least 2 bits (1 for MSE + 1 for QJL)"
 
@@ -234,6 +241,9 @@ class TurboQuantProd(torch.nn.Module):
 
         Returns ProdQuantized with bit-packed MSE indices, QJL signs, and norms.
         """
+        if x.device != self.S.device:
+            self.to(x.device)
+
         # Stage 1: MSE quantize at (b-1) bits
         mse_q = self.mse_quantizer.quantize(x)
 

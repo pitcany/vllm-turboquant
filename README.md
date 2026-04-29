@@ -1,6 +1,8 @@
 # TurboQuant: KV Cache Compression for LLM Inference
 
-Implementation of TurboQuant KV cache compression (ICLR 2026, arXiv:2504.19874) with vLLM integration. Tested on dense and MoE architectures across RTX 3090 and RTX 5090 GPUs.
+Implementation of TurboQuant KV cache compression (ICLR 2026, arXiv:2504.19874) with vLLM integration.
+
+> **Status: alpha.** The numerical kernels (codebooks, rotation, quantizer, store) are stable; the vLLM integration monkey-patches private vLLM v1 internals and is pinned to a narrow vLLM range. Benchmarks below were collected on internal model checkpoints and are **not currently reproducible from this repo as-is** — see "Limitations" and "Reproducing benchmarks".
 
 ## Benchmark Results
 
@@ -122,7 +124,7 @@ Alternatively, freed VRAM supports **3 additional concurrent 131k-context reques
 
 ### Adversarial Audit
 
-Honest assessment of claims (see `audit_claims.py` for full data):
+Honest assessment of claims (audit script not yet included in this repo):
 
 | Claim | Verdict |
 |-------|---------|
@@ -151,7 +153,7 @@ The combined estimator is **unbiased**: E[estimated inner product] = true inner 
 ```
 turboquant/
   codebook.py          # Lloyd-Max optimal scalar quantizer for Beta distribution
-  codebooks/           # Pre-generated codebook files (d=128/256, bits 2/3/4)
+  codebooks/           # Pre-generated codebook files (d=64/128/576, bits 1-4)
   rotation.py          # Random orthogonal rotation + QJL projection matrices
   quantizer.py         # TurboQuantMSE + TurboQuantProd (Algorithms 1 & 2)
   kv_cache.py          # KV cache manager with value bit-packing
@@ -162,20 +164,8 @@ turboquant/
   triton_kernels.py    # 3 fused Triton kernels for decode attention
   vllm_attn_backend.py # Thin shim delegating to integration/vllm.py
 
-validate_paper.py      # 9 tests validating Theorems 1-3
-audit_claims.py        # Adversarial audit of all claims
-test_modular.py        # 19 modular architecture tests
-test_turboquant.py     # 7 core quantizer tests
-proof.py               # A/B benchmark (baseline vs TQ)
-
-# Profiling scripts (8x RTX 3090 MoE validation)
-validate_moe.py        # Baseline measurements via vLLM API
-validate_moe_phase2.py # TQ quality on real GPU with head_dim=256
-validate_moe_phase3.py # Logprobs, multi-needle, reasoning at max context
-profile_100k.py        # Full profiling at 1k-131k context
-profile_large.py       # Large context (64k-131k) with file-based payloads
-baseline_vs_tq.py      # VRAM comparison: baseline bf16 vs TQ compressed
-baseline_vs_tq_v2.py   # Block-level measurement during inference
+proof.py               # 2-process A/B benchmark (baseline vs TQ) -- needs local model
+benchmark.py           # Multi-model throughput/quality harness -- needs local model
 ```
 
 ## Usage
@@ -183,25 +173,29 @@ baseline_vs_tq_v2.py   # Block-level measurement during inference
 ```bash
 pip install -e .
 
-# Run paper validation (CPU, no GPU needed)
-python validate_paper.py
-
-# Run adversarial audit
-python audit_claims.py
-
-# Run modular tests
-python -m pytest test_modular.py -v
-
-# Run proof benchmark (requires 4x RTX 3090 + Qwen3.5-27B-AWQ)
-CUDA_VISIBLE_DEVICES=0,1,4,6 python proof.py
+# Sanity check the package imports
+python -c "import turboquant; print(turboquant.__version__)"
 ```
+
+The vLLM integration is currently driven through `proof.py` / `benchmark.py`, both of
+which assume a model on disk and patch vLLM v1 internals via `collective_rpc`. There
+is no stable user-facing API yet — see "Limitations". A simple wrapper
+(`turboquant.enable_for_vllm(...)`) is planned.
+
+## Reproducing benchmarks
+
+The benchmark numbers in this README were collected against internal model checkpoints
+(referred to as `Qwen3.5-27B` and `Qwen3.5-35B-A3B`) that are **not** public Hugging
+Face IDs. To rerun on your own model:
+
+1. Edit `benchmark.py` `MODELS` dict to point `path` at a local HF model directory.
+2. Adjust `tp`, `gpu_mem`, `max_model_len`, and `block_size` for your hardware.
+3. `CUDA_VISIBLE_DEVICES=... MODEL=<key> python benchmark.py`
 
 ## Test Results
 
-All 35 tests pass:
-- `test_modular.py`: 19/19 (modular architecture)
-- `test_turboquant.py`: 7/7 (core quantizer)
-- `validate_paper.py`: 9/9 (paper theorem validation)
+A formal test suite has not yet been ported into this repo. Treat `proof.py` /
+`benchmark.py` output as the only currently runnable validation path.
 
 ## Limitations
 
@@ -213,8 +207,11 @@ All 35 tests pass:
 
 ## Environment
 
-Tested on:
-- vLLM 0.18.0, PyTorch 2.10, CUDA 12.8
-- RTX 5090 (32GB) -- Qwen3.5-27B-AWQ, single GPU
-- 8x RTX 3090 (24GB) -- Qwen3.5-35B-A3B MoE, TP=8
-- Python 3.12
+Last validated against:
+- vLLM 0.17.x / 0.18.x, PyTorch 2.10, CUDA 12.8, Python 3.12
+- RTX 5090 (32GB), single GPU, dense AWQ checkpoint
+- 8x RTX 3090 (24GB), TP=8, MoE checkpoint with hybrid full-/linear-attention
+
+The integration installs hooks via `vllm.v1.executor.abstract.Executor` and
+`vllm.v1.worker.gpu_worker`. Other vLLM versions are likely to break it; pin
+your env or expect to patch `turboquant/vllm_attn_backend.py`.
