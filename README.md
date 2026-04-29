@@ -171,16 +171,61 @@ benchmark.py           # Multi-model throughput/quality harness -- needs local m
 ## Usage
 
 ```bash
-pip install -e .
+pip install -e .[vllm]
 
 # Sanity check the package imports
 python -c "import turboquant; print(turboquant.__version__)"
+
+# CPU-only smoke test (just the quantizer math, no vLLM):
+NO_VLLM=1 python quickstart.py
+
+# Single-GPU end-to-end smoke test on a small public model:
+python quickstart.py
+# -> downloads Qwen/Qwen2.5-0.5B-Instruct, runs baseline vs TQ in one process
+
+# Multi-GPU:
+CUDA_VISIBLE_DEVICES=0,1 TP=2 python quickstart.py
+
+# Pick another model:
+MODEL=meta-llama/Llama-3.2-1B-Instruct python quickstart.py
 ```
 
-The vLLM integration is currently driven through `proof.py` / `benchmark.py`, both of
-which assume a model on disk and patch vLLM v1 internals via `collective_rpc`. There
-is no stable user-facing API yet — see "Limitations". A simple wrapper
-(`turboquant.enable_for_vllm(...)`) is planned.
+### Programmatic use
+
+```python
+from vllm import LLM, SamplingParams
+from turboquant.vllm import enable_turboquant, free_kv_cache, get_stats
+
+llm = LLM(model="Qwen/Qwen2.5-0.5B-Instruct", max_model_len=4096)
+
+info = enable_turboquant(
+    llm,
+    key_bits=3,
+    value_bits=2,        # bump to 4 for quality-sensitive workloads
+    buffer_size=128,
+    mode="capture_only", # or "hybrid"
+)
+# info -> {'workers': N, 'hooks_per_worker': [..], 'mode': 'capture_only', ...}
+
+out = llm.generate(["Hello, "], SamplingParams(max_tokens=32))
+print(out[0].outputs[0].text)
+
+# Optional: drop paged KV-cache tensors for TQ-hooked layers after prefill.
+freed_bytes = free_kv_cache(llm)
+
+# Inspect TQ state:
+print(get_stats(llm))
+```
+
+`turboquant.vllm.enable_turboquant` walks the vLLM v1 engine (which is a moving
+target) and runs hook installation on every worker via `collective_rpc`.
+If a future vLLM release relocates `engine_core.engine_core.model_executor`,
+this function raises `TurboQuantVLLMError` with a clear message instead of
+silently doing nothing.
+
+`proof.py` and `benchmark.py` are kept as multi-process harnesses for
+side-by-side baseline/TQ comparison on a model on disk; they are *not* the
+recommended user entry point.
 
 ## Reproducing benchmarks
 
