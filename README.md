@@ -18,6 +18,8 @@ Implementation of TurboQuant KV cache compression (ICLR 2026, arXiv:2504.19874) 
 >
 > **What it would take to fix**: register the capture as a torch op so it survives `torch.compile`, rewrite hybrid attention to combine paged `kv_cache` + TQ store rather than only TQ store, and either capture on prefix-cache hit or require prefix caching off. Realistically 1–2 weeks of focused work; tracked as the next major piece of engineering.
 >
+> **Plan**: see [`docs/plan-path-b.md`](docs/plan-path-b.md). That document is the contract for the next phase of work — working principles, sprint plan, acceptance criteria per sprint, and definitions-of-done for each finding above.
+>
 > The rest of this README is preserved for reference. Adjust your expectations accordingly.
 
 ## Benchmark Results (NOT CURRENTLY REPRODUCIBLE — see notice above)

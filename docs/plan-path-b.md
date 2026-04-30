@@ -1,0 +1,340 @@
+# Path B — Plan: Make the vLLM Integration Actually Work
+
+This document is the contract for the next phase of work on
+`pitcany/vllm-turboquant`. Read it before opening a Path B PR.
+
+The README's top-of-file ⚠️ notice describes three independent issues that
+together mean the vLLM integration does nothing useful on a default vLLM
+configuration. Path B is the project to fix those, *truthfully*, with
+end-to-end correctness verified on a real, public, downloadable model.
+
+This plan supersedes the loose discussion in chat. Where they conflict,
+this document wins. Where this document is silent, defer to the
+working principles below.
+
+---
+
+## 1. Working principles
+
+These are non-negotiable. They exist because Path A surfaced findings
+the previous integration claims contradicted, and we don't want that to
+happen again.
+
+1. **No fix without a log-backed hypothesis.** Every change must be
+   motivated by an observed log line, stack trace, captured tensor
+   value, or counter — not by reasoning about what *should* happen.
+2. **Reproduce before changing.** Every claim of "X is broken" needs a
+   reproducer command + captured output checked into `docs/traces/`
+   before we touch the code that handles X.
+3. **Diagnostic logging at every interception point.** The integration
+   layer must emit `logger.debug` at every monkey-patched method,
+   every capture call, every hybrid branch, every `free_kv_cache`
+   call. Gated behind `TURBOQUANT_TRACE=1` so it's free in normal use.
+4. **Diff baselines, don't extrapolate.** When a change "fixes"
+   something, the evidence must be a *before-vs-after diff* of the
+   same captured trace under the same workload, both checked in or
+   pasted in the PR. "Looks better" is not evidence.
+5. **Bisect on real workloads.** When something regresses, bisect on
+   commits using the actual quickstart workload that surfaced the
+   bug, not on synthetic tests. Synthetic unit tests are necessary
+   for not-regressing the kernels but they are demonstrably blind to
+   the integration bugs we care about.
+6. **Trust the runtime, not the docstring.** vLLM 0.17's docstrings,
+   types, and module names lie about the runtime path under
+   `compilation_config`. Treat live `inspect.getsource(...)`,
+   `compilation_config.splitting_ops`, and stderr from the
+   `EngineCore` subprocess as ground truth.
+7. **Root-cause every silent failure.** If a hook fires zero times
+   when it should fire, finish answering "why" before writing the
+   fix. Multiple plausible causes must each be ruled in or out by a
+   separate log, not by argument.
+8. **One change per commit.** Each commit does exactly one thing
+   whose effect is visible in a single trace diff. No bundling.
+
+---
+
+## 2. Decisions (defaults locked in)
+
+These are the parameters Path B is executed against. Change them only
+by editing this file in a separate commit, not silently in another PR.
+
+| Decision | Value | Rationale |
+|---|---|---|
+| Verification model | `meta-llama/Llama-3.2-1B-Instruct` | Real public HF model, dense full-attention (no Mamba/MoE), fits a single 24GB GPU, 32k context, common reference point. |
+| GPU CI runner | None (run-locally-before-PR) | Self-hosted GPU runners are operational overhead we're not ready for. Path B PRs must include a captured trace from a local CUDA run as evidence. |
+| Correctness bar | Top-1 token agreement ≥ 95% on a 256-token greedy decode (`temperature=0`) from a fixed prompt, vs. the same model running baseline vLLM. | Identical text is too strict for a stochastic-noise quantizer. Perplexity bars are noisier than top-1 agreement on greedy decode and require LM-eval scaffolding we don't have. |
+| Scope | **Conservative** — Sprints 0–4 only. | "TQ saves N% VRAM with ≤ 5% correctness loss and ≥ 0.8× baseline tok/s." No fused Triton kernel in scope; if memory savings are real, perf is a follow-up project. |
+| Trace storage | `docs/traces/*.log` checked in. | Evidence-in-repo. Total budget 5 MB. If a trace exceeds that, summarize and link to a Gist. |
+
+---
+
+## 3. Sprint plan
+
+### Sprint 0 — Instrumentation & reproduction harness (4–5 days)
+
+**Goal.** End the sprint with a logging mode that, on a single
+`quickstart.py` command, produces a per-step trace from which any
+subsequent claim about "what fired" or "what didn't" can be settled by
+`grep`. **No code fixes in Sprint 0.** Only logging, captured logs, and
+a recipe.
+
+**Tasks.**
+
+- **S0.1** Add `TURBOQUANT_TRACE` env var. When set, enables
+  `logger.debug` at every interception point in
+  `turboquant/integration/vllm.py`:
+  - `install_hooks` — one line per layer with `(layer_name,
+    backend_kind, head_dim, num_kv_heads)`
+  - `_make_patched_kv_update.patched` — one line per call with
+    `(layer_idx, slot_mapping.shape[0], mode)`
+  - `_make_patched_forward.patched` — one line per call with
+    `(layer_idx, query.shape, attn_metadata.max_query_len, mode,
+    branch_taken)`
+  - `_capture_kv` — one line per call with `(layer_idx, num_tokens,
+    via_forward)`
+  - hybrid branch — one line per decision with `(flat.num_tokens,
+    ring.size, took_compressed_path)`
+  - `free_kv_cache` — one line per layer with `(layer_idx, freed_bytes)`
+  Default off. Log format: `[TQ-TRACE] %(name)s pid=%(process)d
+  layer=%d %(message)s`.
+
+- **S0.2** Capture three reference traces under three configurations
+  on the same workload (`MODE=hybrid LONG_PROMPT=1 BUFFER_SIZE=16
+  MAX_TOKENS=64`). Check them into `docs/traces/`:
+  - `s0_compiled.log` — default config
+  - `s0_eager.log` — `enforce_eager=True`
+  - `s0_eager_no_prefix.log` — `enforce_eager=True,
+    enable_prefix_caching=False`
+
+- **S0.3** Write `docs/integration-state.md` that *cites lines from
+  those traces* as evidence for each finding. Replaces the inferred
+  conclusions in the README's current ⚠️ notice with line-numbered
+  references like `s0_compiled.log:142 — do_kv_cache_update never
+  fires; s0_eager.log:89 — fires per-token`. This becomes the
+  canonical statement of what's broken.
+
+- **S0.4** e2e correctness probe: `tests/test_correctness_e2e.py`
+  (CUDA-marked, skipped in default CI). Loads
+  `Llama-3.2-1B-Instruct`, runs baseline vs. TQ generation on a fixed
+  256-token greedy decode, compares token-id sequences position by
+  position. Reports top-1 agreement %. Asserts `agreement >= 0.95`.
+  Probe also dumps its own trace to `/tmp/tq_probe_*.log`.
+
+**Acceptance criteria.**
+
+- `docs/traces/s0_*.log` exist, are non-trivial (>50 lines each).
+- `docs/integration-state.md` cites at least one specific line in
+  each of the three traces for each of the README's three findings.
+- `tests/test_correctness_e2e.py` exists, runs on a CUDA box, prints a
+  number, currently fails (expected — that's the target Sprint 1
+  shrinks).
+- `pytest tests/` (CPU-only) still 94 passed.
+- ruff check + format clean.
+
+---
+
+### Sprint 1 — Capture survives `torch.compile` (3–5 days)
+
+**Entry condition.** `docs/integration-state.md` names a specific
+line in `s0_compiled.log` as the immediate cause of capture failure.
+
+**Tasks.**
+
+- **S1.1** Try **1B (`torch.library` override of
+  `vllm::unified_kv_cache_update`)**. Register an impl that calls the
+  original and writes a copy into TQ's store. Validate by capturing
+  `s1_compiled.log` and grepping for our trace line — must appear
+  ≥ 256 times for a 270-prefill + 64-decode workload.
+
+- **S1.2** If 1B is blocked by `torch.library` re-registration
+  conflict (document the conflict in `integration-state.md` first),
+  fall back to **1A (forward pre-hooks)**. Measure compile-mode
+  tok/s impact; the gate is **≥ 0.7× raw vLLM tok/s** on
+  `Llama-3.2-1B-Instruct` at 4k context. If 1A regresses below that,
+  abandon and try 1C.
+
+- **S1.3** If 1A fails the gate, escalate to **1C (paged-cache
+  reader)**. Use `ingest_prefill_from_paged_cache` (already
+  scaffolded) per `step()`. Document why earlier paths failed.
+
+- **S1.4** Update `tests/test_vllm_smoke.py` with a CUDA-only test
+  asserting captured token count == prefill+decode tokens for a
+  fixed workload.
+
+**Acceptance criteria.**
+
+- `s1_compiled.log` shows capture firing per-token under default vLLM
+  config (no `enforce_eager`).
+- Captured token count matches input+output tokens within 1%
+  (allowing for the warmup/profile pass).
+- `tests/test_vllm_smoke.py` CUDA test passes.
+- Compile-mode tok/s on `Llama-3.2-1B-Instruct` at 4k context ≥ 0.7×
+  raw baseline (measured, logged in PR).
+- `docs/integration-state.md` updated with S1's before/after trace
+  lines.
+
+---
+
+### Sprint 2 — Prefix caching evasion (1 day)
+
+**Entry condition.** Sprint 1 acceptance criteria met.
+
+**Tasks.**
+
+- **S2.1** In `enable_turboquant`, read
+  `llm.llm_engine.vllm_config.cache_config.enable_prefix_caching`. If
+  True and `mode != "off"`, raise `TurboQuantVLLMError` with the
+  remediation: "Set `enable_prefix_caching=False` on `LLM(...)` until
+  capture-on-cache-hit is implemented."
+- **S2.2** File a follow-up issue / TODO in
+  `docs/integration-state.md` for capture-on-cache-hit (option 2A).
+  Out of scope for Path B Conservative.
+
+**Acceptance criteria.**
+
+- Workload that previously evaded capture due to prefix caching now
+  errors loudly at `enable_turboquant` time.
+- `tests/test_vllm_smoke.py` adds a unit test (no CUDA needed) that
+  fakes a `cache_config.enable_prefix_caching=True` and asserts
+  `TurboQuantVLLMError` is raised.
+
+---
+
+### Sprint 3 — Hybrid attention combines paged KV + TQ store (4–7 days)
+
+**Entry condition.** Sprint 1 + 2 acceptance criteria met.
+
+**Tasks.**
+
+- **S3.1** Audit `score.compute_hybrid_attention` and
+  `_make_patched_forward`'s hybrid branch. The current code reads
+  only `state.store.get_flat_cache()` and `ring.peek()`, ignoring
+  the paged `kv_cache` tensor. Document the gap with a trace line.
+- **S3.2** Rewrite the hybrid path to consume **three KV segments**:
+  - `kv_paged` — un-captured prompt tokens still in the paged cache
+  - `kv_tq` — captured tokens in TQ's compressed store
+  - `kv_ring` — recent exact tokens in the ring buffer
+  Implement in pure PyTorch (option 3A). Online softmax over all
+  three segments. ~80 LOC.
+- **S3.3** e2e correctness probe (`test_correctness_e2e.py`) passes:
+  top-1 agreement ≥ 95% on 256 decode tokens.
+- **S3.4** Capture `s3_compiled.log` showing hybrid branch firing on
+  decode tokens past the buffer window, attending across all three
+  segments.
+
+**Acceptance criteria.**
+
+- `tests/test_correctness_e2e.py` passes (≥ 95% top-1 agreement on
+  `Llama-3.2-1B-Instruct`).
+- Hybrid mode no longer produces degenerate output (e.g.
+  `"...\n\n.."`) on the long-prompt workload.
+- `docs/integration-state.md` updated with the new trace evidence.
+
+---
+
+### Sprint 4 — Real memory savings, the actual point (2–3 days)
+
+**Entry condition.** Sprint 3 acceptance criteria met.
+
+**Tasks.**
+
+- **S4.1** Rework `free_kv_cache` to release only the suffix that's
+  been migrated to TQ's store, leaving any un-captured prefix
+  in-place. Document the new semantics in the docstring.
+- **S4.2** Real benchmark: a runnable script (replaces or
+  supplements `benchmark.py`) that takes
+  `--model HF_ID --context-len N --decode-tokens M` and reports:
+  - VRAM used by KV cache (baseline vs. TQ-after-`free_kv_cache`)
+  - Decode tok/s (baseline vs. TQ)
+  - Top-1 agreement % (the correctness number)
+- **S4.3** Update README:
+  - Remove the ⚠️ "non-functional" notice.
+  - Add a single "Verified configuration" table with the numbers
+    measured on `Llama-3.2-1B-Instruct` from S4.2, with the exact
+    command that reproduces them.
+  - Demote the legacy benchmark tables to a "Historical claims —
+    not yet reproduced on a public model" appendix.
+
+**Acceptance criteria.**
+
+- One reproducible benchmark command, documented in README, runs on
+  `Llama-3.2-1B-Instruct` and produces a table the user can verify.
+- VRAM saved per token > 0.
+- Top-1 agreement ≥ 95%.
+- Decode tok/s ≥ 0.8× baseline.
+
+---
+
+### Sprint 5 (out of scope for Conservative) — Fused Triton hybrid kernel
+
+Tracked as a separate project. Will land as `docs/plan-path-b-perf.md`
+when Sprint 4 is done.
+
+---
+
+## 4. Definitions of done — for each ⚠️ finding
+
+The current README ⚠️ notice asserts three issues. Path B is **done**
+when each is replaced by a positive statement of the form *"as of
+commit SHA, this works under config X, evidenced by trace
+docs/traces/Y.log:Z."*
+
+| Finding | Definition of "done" |
+|---|---|
+| **F1: torch.compile bypasses our hooks.** | `s1_compiled.log` shows the patched function firing per-token under `compilation_config` defaults; `tests/test_vllm_smoke.py::test_capture_under_compile` passes on CUDA. |
+| **F2: Prefix caching evades capture.** | Conservative scope: `enable_turboquant` raises a typed error if prefix caching is on, and `tests/test_vllm_smoke.py::test_rejects_prefix_caching` asserts that. The "really fix it" version (capture-on-cache-hit) is a separate ticket. |
+| **F3: Hybrid mode ignores the paged KV cache.** | `tests/test_correctness_e2e.py` passes (≥ 95% top-1 agreement on `Llama-3.2-1B-Instruct`); `s3_compiled.log` shows the hybrid branch attending across all three segments. |
+
+When all three rows are checked, the README's ⚠️ notice is rewritten
+into a "Verified configuration" section per Sprint 4.
+
+---
+
+## 5. Stop-loss criteria
+
+When do we abandon Path B and pivot? Concrete bars:
+
+- **End of Sprint 1**, if neither 1A, 1B, nor 1C yields working
+  capture under default `compilation_config`. The integration approach
+  itself may be wrong; TQ should be re-architected as a separate
+  inference engine (or as a vLLM plugin via the upstream plugin
+  surface, not a monkey-patch).
+- **End of Sprint 3**, if hybrid 3A produces > 30% top-1 disagreement
+  even with full capture and prefix caching off. The underlying TQ
+  approach (3-bit key + 2-bit value at 1B scale) may not be
+  quality-viable at this size; escalate to `value_bits=4` or skip
+  hybrid entirely (capture-only + free_kv_cache for memory-only wins).
+- **Anytime**, if a sprint's "no code fixes in this sprint" rule is
+  violated (i.e., we fix something speculatively, and a subsequent
+  bug shows the fix was wrong). Stop, write the missed log, restart.
+
+---
+
+## 6. Out of scope (for now)
+
+- Async engine support. Path B targets the synchronous `vllm.LLM`
+  only.
+- TP > 1. Path B targets single-GPU. The integration was previously
+  exercised on 4× and 8× GPU; TP correctness is its own project.
+- Async / streamed generation.
+- vLLM 0.18+. Path B targets 0.17.x explicitly until 0.17 works.
+
+---
+
+## 7. Document maintenance
+
+This file is the contract. It is updated by:
+
+- Editing decisions in §2 (record reason in commit message).
+- Updating sprint acceptance criteria when a sprint completes
+  (record evidence link).
+- Adding a row to §4 when a finding is closed.
+
+It is **not** updated by:
+
+- Hand-waving in chat.
+- Inferred conclusions without a captured trace.
+
+---
+
+*Last updated: 2026-04-29 (initial draft).*
