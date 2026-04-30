@@ -2,6 +2,48 @@
 
 Implementation of TurboQuant KV cache compression (ICLR 2026, arXiv:2504.19874) with vLLM integration.
 
+> ## 🛑 SUPERSEDED — TurboQuant landed upstream in vLLM 0.20.0 (2026-04)
+>
+> This repository is **archived as of 2026-04-30**. TurboQuant has been merged into vLLM mainline as a v1 **attention backend** (PRs [#38479](https://github.com/vllm-project/vllm/pull/38479) "TurboQuant: 2-bit KV cache compression with 4× capacity" and [#40092](https://github.com/vllm-project/vllm/pull/40092) "FA3/FA4 prefill support") and ships in [vLLM v0.20.0](https://github.com/vllm-project/vllm/releases/tag/v0.20.0). The upstream integration takes the structurally cleaner path our [`docs/plan-path-b.md`](docs/plan-path-b.md) §5 first-bullet contemplated as a stop-loss option ("re-architect TQ as a vLLM plugin / attention backend, not a monkey-patch") — and which we explicitly didn't take.
+>
+> **Use upstream instead:**
+>
+> ```bash
+> pip install 'vllm>=0.20.0'
+> vllm serve <model> --kv-cache-dtype turboquant_k8v4    # FP8 key + 4-bit value, 2.6× compression
+> vllm serve <model> --kv-cache-dtype turboquant_t4nc    # 4-bit MSE + NC, 3.8× compression
+> vllm serve <model> --kv-cache-dtype turboquant_k3v4nc  # 3-bit key + 4-bit value + NC, 4.3× compression
+> vllm serve <model> --kv-cache-dtype turboquant_t3nc    # 3-bit + 3-bit + NC, 4.9× compression
+> ```
+>
+> ### Why the upstream port works where this repo's hybrid mode didn't
+>
+> Five design decisions in [#38479](https://github.com/vllm-project/vllm/pull/38479) directly address the §5 second-bullet stop-loss this repo hit on Llama-3.2-1B (top-1 agreement of 7.69% / 0.39% / 2.73% across `key_bits/value_bits` ∈ {3/2, 3/4, 4/4} — see [`docs/integration-state.md`](docs/integration-state.md) § "S3.3 follow-up"):
+>
+> 1. **Walsh-Hadamard rotation** instead of random-orthogonal (faster, structurally Hadamard-aligned, better quantization-error distribution).
+> 2. **Norm correction (NC)** — re-normalises centroid vectors to unit norm before inverse rotation; ~0.8% PPL improvement at 4-bit. We don't have NC.
+> 3. **Boundary-layer protection** — first/last N layers keep FP16 KV cache via `kv_cache_dtype_skip_layers`. We quantize all layers uniformly.
+> 4. **No QJL** — explicitly omitted per upstream PR ("5+ independent groups found it hurts attention quality by amplifying variance through softmax"). The TurboQuant *paper* and this repo both use QJL.
+> 5. **No 2-bit-value preset shipped.** The most aggressive upstream preset (`turboquant_t3nc`) is 3-bit-key + 3-bit-value. Our plan §2 default of 3-bit-key + **2-bit-value** is more aggressive than anything upstream ships — consistent with our finding that 2-bit value isn't quality-viable at 1B scale.
+>
+> ### What this repo contributed (preserved as a research record)
+>
+> - A reproducer for the F1 / F2 / F3 findings the original ⚠️ notice asserted, with line-numbered trace evidence (`docs/traces/s0_*.log`).
+> - A working post-`execute_model` paged-cache reader ([commit `304ba1f`](https://github.com/pitcany/vllm-turboquant/commit/304ba1f), Sprint 1 / S1.3 / 1C) — the only Python-level capture path that survives FULL CUDAGraph replay in vLLM 0.17.x. **Obsolete vs upstream's attention-backend approach**, but the recon work documenting *why* (`docs/integration-state.md` § "F1bis", §S1.1, §S1.2) is the kind of finding the upstream port implicitly relied on.
+> - An end-to-end correctness probe ([`tests/test_correctness_e2e.py`](tests/test_correctness_e2e.py)) that measures top-1 agreement on Llama-3.2-1B-Instruct, with `TQ_E2E_KEY_BITS` / `TQ_E2E_VALUE_BITS` env overrides for sweep experiments.
+> - A negative result on the 3-bit-key + 2-bit-value bit budget at 1B scale ([commits `01d8189`, `e1ecf62`](https://github.com/pitcany/vllm-turboquant/commits/main)). Worth citing as one data point in the "why upstream skipped 2-bit value" reasoning, even though upstream reached the same conclusion via different evidence (the omitted-QJL note in [#38479](https://github.com/vllm-project/vllm/pull/38479)).
+> - A path-B plan ([`docs/plan-path-b.md`](docs/plan-path-b.md)) demonstrating an evidence-first / log-backed-hypothesis discipline that worked. Sprint 1 / 2 / 3 closed cleanly. Sprint 3 hit its own §5 stop-loss honestly. Sprint 4 / 5 are now N/A.
+>
+> ### What this repo is **not**
+>
+> - Not a maintained library. Use vLLM 0.20.0+ for production.
+> - Not a quality benchmark for upstream. Our numbers were measured on a different bit budget (3/2 vs 3/3 minimum upstream), with random-orthogonal rotation (vs WHT), with QJL (vs without), without norm correction, without boundary-layer protection. Direct comparison to [#38479](https://github.com/vllm-project/vllm/pull/38479)'s GSM8K / NIAH numbers would mislead.
+> - Not targeting vLLM 0.20.0+. We're stuck on 0.17.x; the 0.20.0 release breaks PyTorch (2.10 → 2.11), CUDA (12.x → 13.0), Transformers (v4 → v5), and the monkey-patch surface this repo's `enable_turboquant` relies on.
+>
+> Final tag: [`v0.2-final`](https://github.com/pitcany/vllm-turboquant/releases/tag/v0.2-final). The historical ⚠️ notice and original benchmark tables are preserved verbatim below.
+>
+> ---
+>
 > ## ⚠️ Integration is currently non-functional on default vLLM
 >
 > End-to-end verification on real hardware (vLLM 0.17.1 + RTX 5090 + Qwen2.5-0.5B-Instruct, 2026-04-29) revealed that **the vLLM integration does not actually do anything on a default vLLM configuration**. Three independent issues:

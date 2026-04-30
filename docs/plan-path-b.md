@@ -1,5 +1,26 @@
 # Path B — Plan: Make the vLLM Integration Actually Work
 
+> ## 🛑 SUPERSEDED — TurboQuant landed upstream in vLLM 0.20.0 (2026-04-30)
+>
+> This plan is **archived**. TurboQuant has been merged into vLLM mainline as
+> a v1 attention backend (PRs
+> [#38479](https://github.com/vllm-project/vllm/pull/38479),
+> [#40092](https://github.com/vllm-project/vllm/pull/40092)) and ships in
+> [vLLM v0.20.0](https://github.com/vllm-project/vllm/releases/tag/v0.20.0).
+> The upstream integration takes the §5 first-bullet "re-architect as a
+> vLLM plugin / attention backend" path this plan contemplated as a
+> stop-loss option — and which we explicitly didn't take.
+>
+> Sprint 1, 2, 3 closed (with Sprint 3 hitting its own §5 second-bullet
+> stop-loss on bit-budget quality at 1B scale). **Sprint 4 and Sprint 5
+> are now N/A** — investing in this repo's monkey-patch surface is a
+> dead end vs upstream's attention-backend implementation. See README's
+> SUPERSEDED notice for the migration path and the design-decision diff
+> against upstream.
+>
+> The plan body below is preserved verbatim as a research record of how
+> Path B was scoped, what it found, and where it stopped.
+
 This document is the contract for the next phase of work on
 `pitcany/vllm-turboquant`. Read it before opening a Path B PR.
 
@@ -340,18 +361,45 @@ research-mode setting and a Sprint 5 / fused-Triton-kernel target.
 
 ---
 
-### Sprint 4 — Real memory savings, the actual point (2–3 days)
+### Sprint 4 — Real memory savings, the actual point (2–3 days) — N/A as of 2026-04-30
 
-**Entry condition.** ~~Sprint 3 acceptance criteria met.~~ Per Sprint
-3's §5-second-bullet outcome (above), Sprint 4 enters with hybrid
-quality not viable at 1B/3-bit/2-bit and pivots to the §5 third
-bullet (capture-only + `free_kv_cache` for memory-only wins). The
-correctness story changes from "hybrid attention top-1 ≥ 95%" to
-"capture-only is baseline-by-construction (TQ doesn't change attention
-output) + a real VRAM-saved-per-token number that the user can
-reproduce". S4.1 / S4.2 / S4.3 below stand as written; S4.3's
-"Verified configuration" table advertises `mode="capture_only"`
-(not `mode="hybrid"`).
+**Entry condition.** ~~Sprint 3 acceptance criteria met.~~ ~~Per Sprint
+3's §5-second-bullet outcome, Sprint 4 enters with hybrid quality not
+viable at 1B/3-bit/2-bit and pivots to the §5 third bullet (capture-only
++ `free_kv_cache` for memory-only wins).~~
+
+**Sprint 4 is N/A as of 2026-04-30.** TurboQuant landed upstream in
+[vLLM v0.20.0](https://github.com/vllm-project/vllm/releases/tag/v0.20.0)
+as a v1 attention backend ([#38479](https://github.com/vllm-project/vllm/pull/38479),
+[#40092](https://github.com/vllm-project/vllm/pull/40092)) — the §5
+first-bullet "re-architect" path. Investing in this repo's
+monkey-patch surface for the capture-only memory-only-wins story
+would optimise a dead-end integration; the upstream backend is
+strictly more capable (full hybrid path with FA3/FA4 prefill + 4
+quality-tested presets, none of which use the 2-bit-value budget our
+§5 finding showed is not viable at 1B scale). What actually landed
+during the Sprint 4 attempt:
+
+- ✅ **S4.1** ([commit `ec30102`](https://github.com/pitcany/vllm-turboquant/commit/ec30102))
+  — `free_kv_cache` reworked: per-layer migration precondition,
+  release-only-migrated-suffix semantics, post-free patched-forward
+  guard against the 1-byte-sentinel-then-flash-attn-crash failure mode,
+  5 CPU unit tests (`tests/test_free_kv_cache.py`). Honest improvement
+  to a real bug; useful to anyone forking this repo even though the
+  monkey-patch surface itself is now obsolete.
+- ✅ **S4.2** ([commit `e28082c`](https://github.com/pitcany/vllm-turboquant/commit/e28082c))
+  — `scripts/bench_path_b.py` written, lint-clean. Per-pass VRAM
+  (allocator + nvidia-smi), decode tok/s, top-1 agreement, JSON output.
+  Never run end-to-end — host CUDA driver state went bad mid-session
+  and upstream landing made the run moot.
+- ❌ **S4.3** — not started. README rewrite to "Verified configuration"
+  was the next step; instead the README gained a SUPERSEDED notice
+  pointing at upstream.
+
+The original Sprint 4 task list is preserved verbatim below as a
+research record. The S4.1 free_kv_cache fixes and S4.2 benchmark
+script remain useful as a delta against any future fork that targets
+a different vLLM version or a different bit budget.
 
 **Tasks.**
 
@@ -382,10 +430,19 @@ reproduce". S4.1 / S4.2 / S4.3 below stand as written; S4.3's
 
 ---
 
-### Sprint 5 (out of scope for Conservative) — Fused Triton hybrid kernel
+### Sprint 5 (out of scope for Conservative) — Fused Triton hybrid kernel — N/A as of 2026-04-30
 
-Tracked as a separate project. Will land as `docs/plan-path-b-perf.md`
-when Sprint 4 is done.
+Tracked as a separate project. ~~Will land as `docs/plan-path-b-perf.md`
+when Sprint 4 is done.~~
+
+**Sprint 5 is N/A as of 2026-04-30.** The fused-kernel target Sprint 5
+contemplated has been delivered upstream as **FA3/FA4 prefill + Triton
+decode kernels** in vLLM 0.20.0
+([#38479](https://github.com/vllm-project/vllm/pull/38479),
+[#40092](https://github.com/vllm-project/vllm/pull/40092)). Industrial-
+grade kernels with CUDAGraph capture, stream overlap, in-kernel FP8
+casts, and SM-aware Hopper / Ampere paths — substantially beyond what
+"Path B Perf" was scoped to deliver.
 
 ---
 
@@ -400,12 +457,14 @@ docs/traces/Y.log:Z."*
 |---|---|---|
 | **F1: torch.compile bypasses our hooks.** | `s1_compiled.log` shows the patched function firing per-token under `compilation_config` defaults; `tests/test_vllm_smoke.py::test_capture_under_compile` passes on CUDA. | ✅ **Closed** by `304ba1f` (S1.3 / 1C — post-execute paged-cache reader). Evidence: `docs/traces/s1_compiled.log` (`paged_read num_tokens=1` × 1512). |
 | **F2: Prefix caching evades capture.** | Conservative scope: `enable_turboquant` raises a typed error if prefix caching is on, and `tests/test_vllm_smoke.py::test_rejects_prefix_caching` asserts that. The "really fix it" version (capture-on-cache-hit) is a separate ticket. | ✅ **Closed** by `4c902f1` (S2.1). Capture-on-cache-hit follow-up filed at `docs/integration-state.md` § "F2 closure path (b) — out of scope" (S2.2 / `2a4bbea`). |
-| **F3: Hybrid mode ignores the paged KV cache.** | `tests/test_correctness_e2e.py` passes (≥ 95% top-1 agreement on `Llama-3.2-1B-Instruct`); `s3_compiled.log` shows the hybrid branch attending across all three segments. | ⚠️ **Half-closed.** Structural half closed by `0bf9510` (S3.2): combiner now folds `kv_paged ∪ kv_tq ∪ kv_ring` via online softmax; degenerate `quant, quant, quant` tail gone; `hybrid_segments num_paged=1 num_tq=… num_ring=…` trace fires per layer × per step. Empirical half (≥ 95% agreement on Llama-1B): **fails at every bit budget tried** (3/2 → 7.69%, 3/4 → 0.39%, 4/4 → 2.73%; see `docs/integration-state.md` § "S3.3 follow-up"). §5 second-bullet stop-loss engaged; F3 row stays *open*. Sprint 4 pivots to capture-only memory-only wins per §5 third bullet. |
+| **F3: Hybrid mode ignores the paged KV cache.** | `tests/test_correctness_e2e.py` passes (≥ 95% top-1 agreement on `Llama-3.2-1B-Instruct`); `s3_compiled.log` shows the hybrid branch attending across all three segments. | 🛑 **Closed by upstream supersession.** Structural half closed by `0bf9510` (S3.2): combiner now folds `kv_paged ∪ kv_tq ∪ kv_ring` via online softmax; degenerate `quant, quant, quant` tail gone; `hybrid_segments num_paged=1 num_tq=… num_ring=…` trace fires per layer × per step. Empirical half (≥ 95% agreement on Llama-1B): **fails at every bit budget tried** in this repo (3/2 → 7.69%, 3/4 → 0.39%, 4/4 → 2.73%; see `docs/integration-state.md` § "S3.3 follow-up"). The upstream port in vLLM 0.20.0 ([#38479](https://github.com/vllm-project/vllm/pull/38479)) closes F3 in production via WHT rotation + norm correction + boundary-layer protection + dropping QJL — design choices this repo's hybrid path doesn't have. F3 is *closed* in the sense that anyone wanting hybrid TQ now uses upstream's `--kv-cache-dtype turboquant_*`. This repo's hybrid path remains a research artefact. |
 
-When all three rows are ✅ Closed (i.e. F3 also clears 95%, or the
-project officially abandons the hybrid-as-default story), the
-README's ⚠️ notice is rewritten into a "Verified configuration"
-section per Sprint 4.
+When all three rows were ✅ Closed (or, per the 2026-04-30 archive
+event, when the project's ⚠️-notice issues are resolved by upstream
+supersession), the README's ⚠️ notice was supposed to be rewritten
+into a "Verified configuration" section per Sprint 4. The actual
+disposition is the SUPERSEDED notice at the top of the README — see
+`README.md` for the migration path to vLLM 0.20.0.
 
 ---
 
@@ -417,15 +476,28 @@ When do we abandon Path B and pivot? Concrete bars:
   capture under default `compilation_config`. The integration approach
   itself may be wrong; TQ should be re-architected as a separate
   inference engine (or as a vLLM plugin via the upstream plugin
-  surface, not a monkey-patch).
+  surface, not a monkey-patch). *(2026-04-30: this is exactly the path
+  vLLM 0.20.0's TurboQuant attention backend
+  [#38479](https://github.com/vllm-project/vllm/pull/38479) takes.
+  Vindicates the bullet as a bullet, even though we didn't have to
+  invoke it for Sprint 1 itself.)*
 - **End of Sprint 3**, if hybrid 3A produces > 30% top-1 disagreement
   even with full capture and prefix caching off. The underlying TQ
   approach (3-bit key + 2-bit value at 1B scale) may not be
   quality-viable at this size; escalate to `value_bits=4` or skip
   hybrid entirely (capture-only + free_kv_cache for memory-only wins).
+  *(2026-04-30: engaged. Three bit budgets tested at 1B (3/2, 3/4,
+  4/4); none cleared. Upstream's vLLM 0.20.0 port doesn't ship a
+  2-bit-value preset either; minimum is `turboquant_t3nc` at 3/3 +
+  norm correction.)*
 - **Anytime**, if a sprint's "no code fixes in this sprint" rule is
   violated (i.e., we fix something speculatively, and a subsequent
   bug shows the fix was wrong). Stop, write the missed log, restart.
+- **Upstream supersession** *(added 2026-04-30 in archive event)*: if
+  the feature this plan is contracting against ships upstream during
+  the project's lifetime, archive Path B and migrate to upstream.
+  Triggered by vLLM 0.20.0 TurboQuant attention backend; see
+  `README.md` SUPERSEDED notice.
 
 ---
 
@@ -456,14 +528,21 @@ It is **not** updated by:
 
 ---
 
-*Last updated: 2026-04-30 (Sprint 3 complete; §5 second-bullet
-stop-loss engaged after Llama-3.2-1B agreement at 7.69% / 0.39% / 2.73%
-across three bit budgets. F3 row in §4 marked half-closed: structural
-combiner shipped, empirical 95% bar not reachable on Llama-1B.
-Sprint 4 entry condition softened to "post-S3.3 outcome" — Sprint 4
-takes the §5 third-bullet pivot and advertises `mode="capture_only"`
-in the README's Verified Configuration section instead of
-`mode="hybrid"`.
+*Last updated: 2026-04-30 (archive event — TurboQuant landed upstream
+in vLLM 0.20.0 as a v1 attention backend. Path B archived. Sprint 4
+S4.1 + S4.2 still landed before archive; S4.3 cancelled; Sprint 5
+also N/A because upstream shipped FA3/FA4 prefill kernels which were
+exactly Sprint 5's target. §4 F3 row updated to "closed by upstream
+supersession". §5 gains a fourth "upstream supersession" bullet. Tag
+v0.2-final marks the archive state.
+
+2026-04-30 (Sprint 3 complete; §5 second-bullet stop-loss engaged
+after Llama-3.2-1B agreement at 7.69% / 0.39% / 2.73% across three
+bit budgets. F3 row in §4 marked half-closed: structural combiner
+shipped, empirical 95% bar not reachable on Llama-1B. Sprint 4 entry
+condition softened to "post-S3.3 outcome" — Sprint 4 takes the §5
+third-bullet pivot and advertises `mode="capture_only"` in the
+README's Verified Configuration section instead of `mode="hybrid"`.
 
 2026-04-29 (initial draft + same-day Sprint 1 rescope after S1.1 /
 S1.2 recon: 1B blocked structurally, 1A blocked empirically, S1.3 /

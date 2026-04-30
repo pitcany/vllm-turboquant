@@ -1,5 +1,38 @@
 # TurboQuant ↔ vLLM 0.17.x integration — observed state
 
+> ## 🛑 SUPERSEDED — TurboQuant landed upstream in vLLM 0.20.0 (2026-04-30)
+>
+> This document is **archived**. TurboQuant has been merged into vLLM
+> mainline as a v1 attention backend
+> ([#38479](https://github.com/vllm-project/vllm/pull/38479),
+> [#40092](https://github.com/vllm-project/vllm/pull/40092)) and ships
+> in [vLLM v0.20.0](https://github.com/vllm-project/vllm/releases/tag/v0.20.0).
+> See the README's SUPERSEDED notice for the migration path. The
+> findings below remain accurate as a record of what vLLM 0.17.x's
+> integration surface looked like in early 2026 and how Path B
+> attempted to make `pitcany/vllm-turboquant` work against it.
+>
+> Specifically still useful as research / archaeology:
+>
+> - **§F1bis** — the FULL CUDAGraph bypass diagnosis (why
+>   `register_forward_pre_hook` and `torch.library` don't survive
+>   compile in vLLM 0.17.x). The upstream port sidesteps this entirely
+>   by being a captured-graph attention backend, but the diagnosis is
+>   correct for any monkey-patch-style integration.
+> - **§S1.3** — the post-`execute_model` paged-cache reader, the only
+>   Python-level decode-capture path that survives FULL CUDAGraph
+>   replay in vLLM 0.17.x. Obsolete vs an attention-backend approach,
+>   but a clean recipe if anyone needs to instrument 0.17.x without
+>   modifying vLLM source.
+> - **§S3.1 – §S3.3 follow-up** — the empirical Llama-3.2-1B agreement
+>   numbers at 3-bit-key + (2/4-bit value), 4-bit-key + 4-bit-value:
+>   7.69% / 0.39% / 2.73% top-1. None cleared the 30%-disagreement
+>   §5 stop-loss. Aligns with upstream's design choice not to ship a
+>   2-bit-value preset (minimum is `turboquant_t3nc` at 3/3 + norm
+>   correction). Worth citing as evidence that 2-bit value at 1B scale
+>   is not viable without the upstream port's quality features (WHT
+>   rotation, NC, boundary-layer protection, no-QJL).
+
 This document is the canonical statement of what the vLLM integration does
 and does not do today. Each finding cites specific line numbers from the
 three `docs/traces/s0_*.log` evidence files committed in
