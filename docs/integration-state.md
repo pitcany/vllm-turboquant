@@ -465,6 +465,87 @@ hybrid decode path produces degenerate output because the implementation
 is structurally incapable of attending across `kv_paged ∪ kv_tq ∪
 kv_ring`. This is the bug Sprint 3 of `plan-path-b.md` is scoped to fix.
 
+### S3.1 — Audit: which token is the missing one, and where it lives
+
+S3.1 (this commit) refines F3 from "ignores the paged `kv_cache` tensor"
+into a one-token statement, and adds a per-call trace line that surfaces
+the gap as a grep-able number rather than as inferred reasoning.
+
+**Sequence at decode step N (eager mode — the only mode where the hybrid
+forward branch fires; under FULL CUDAGraph the branch is bypassed by
+construction per § "F1bis").**
+
+1. `model_runner.execute_model()` enters the worker.
+2. `unified_kv_cache_update` writes `K_N`/`V_N` to `paged_cache[slot_N]`.
+   The eager-path Python wrapper (the monkey-patched
+   `do_kv_cache_update` at
+   [`turboquant/integration/vllm.py:182`](../turboquant/integration/vllm.py))
+   fires with `num_tokens=1` and returns early — Sprint 1 / S1.3 retired
+   the decode half of this hook (`num_tokens <= 1: return`,
+   [`turboquant/integration/vllm.py:193–195`](../turboquant/integration/vllm.py))
+   so the paged-cache reader and this hook don't double-ingest. **Net
+   effect at this step: K_N / V_N exists in the paged cache and in the
+   `key`/`value` arguments about to be passed to forward, but is not yet
+   in `state.store` or `state.engine.ring`.**
+3. `Attention.forward` fires the hybrid branch
+   ([`turboquant/integration/vllm.py:342`](../turboquant/integration/vllm.py)).
+   `state.store.get_flat_cache()` returns kv_tq covering tokens
+   `0..N−1`; `state.engine.ring.peek()` returns the most recent ≤ ring-capacity
+   subset of those same `0..N−1` tokens. **Token N is in neither.**
+4. `compute_hybrid_attention`
+   ([`turboquant/score.py:31`](../turboquant/score.py)) accepts only
+   `(query, store, recent_k, recent_v, num_query_heads, scale)` — there
+   is no parameter through which the caller could pass `key[:num_actual]`
+   even if it wanted to. The function attends across `kv_tq ∪ kv_ring`,
+   producing an attention output that is missing the current token's
+   K/V.
+5. `execute_model()` returns.
+6. The post-execute paged-cache reader (S1.3 / 1C, installed at
+   [`turboquant/integration/vllm.py:528`](../turboquant/integration/vllm.py))
+   fires now and ingests `paged_cache[slot_N]` into `kv_tq`. By the time
+   the *next* decode step's forward runs, `kv_tq` covers `0..N` — but
+   that decode step then has the *same* gap for token `N+1`.
+
+**Trace evidence.** This commit adds a `hybrid_segments` trace line
+emitted immediately before the `compute_hybrid_attention` call. The
+`num_paged=0` field is hard-coded today because the function literally
+cannot accept any other value:
+
+```text
+[TQ-TRACE] turboquant.trace pid=… layer=… hybrid_segments num_paged=0 num_tq=274 num_ring=1
+```
+
+(Pair this against
+[`s0_eager_no_prefix.log:3581`](traces/s0_eager_no_prefix.log) — the
+existing `hybrid_decision flat_num_tokens=274 ring_size=1
+took_compressed_path=True` line — and the new trace line is what
+`hybrid_decision` would say if it surfaced *what S3.2 has to start
+passing*.)
+
+**Why the user-prompt assertion "kv_paged is empty in practice today" is
+load-bearing-wrong.** The 1C reader does ingest 100% of K/V *writes*,
+but it ingests them *after* `execute_model()` returns — which is *after*
+forward has already run hybrid attention with a one-token-stale view.
+The "missing token" is not a partial-prefill-capture artifact; it is
+the current decode token, present every single step.
+
+**Implication for S3.2.** The kv_paged segment that S3.2 has to add can
+be sourced two ways:
+
+- **A.** Pass `key[:num_actual]` / `value[:num_actual]` from the forward
+  args directly. Already in scope at the call site
+  ([`turboquant/integration/vllm.py:259`](../turboquant/integration/vllm.py)).
+  No paged-cache reading, no slot_mapping plumbing.
+- **B.** Read `paged_cache[slot_N]` via `slot_mapping` from inside
+  forward. Mathematically equivalent at this point in the pipeline (vLLM
+  has already written K_N/V_N to the slot before forward runs), but
+  requires getting `slot_mapping` into the forward closure.
+
+S3.2 takes path **A** — the K/V is already in scope as forward args, so
+reading paged cache buys nothing here. The trace line emitted at the
+call site stays the right shape (`num_paged=N` instead of `0`) under
+both paths.
+
 ---
 
 ## Throughput observations (incidental)

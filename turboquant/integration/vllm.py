@@ -359,6 +359,20 @@ def _make_patched_forward(orig_fn, state: LayerState, no_alloc: bool = False, ca
                 recent_k = recent[0] if recent else None
                 recent_v = recent[1] if recent else None
 
+                # S3.1 — audit: emit per-call segment counts so the F3 gap is
+                # grep-able. Today num_paged is structurally 0 because
+                # compute_hybrid_attention's signature has no kv_paged
+                # parameter (turboquant/score.py:31). The current decode
+                # token's K/V is in scope as `key`/`value` but never reaches
+                # the attention compute, which is exactly the F3 bug
+                # (docs/integration-state.md § "F3 …"). Sprint 3 / S3.2
+                # closes this; this trace line is the before-side of the
+                # before/after diff.
+                _trace(
+                    state.config.layer_idx,
+                    f"hybrid_segments num_paged=0 num_tq={flat_n} num_ring={ring_n}",
+                )
+
                 result = compute_hybrid_attention(
                     query=q,
                     store=state.store,
