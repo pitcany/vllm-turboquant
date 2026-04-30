@@ -2,9 +2,25 @@
 
 Implementation of TurboQuant KV cache compression (ICLR 2026, arXiv:2504.19874) with vLLM integration.
 
-> **Status: alpha.** The numerical kernels (codebooks, rotation, quantizer, store) are stable; the vLLM integration monkey-patches private vLLM v1 internals and is pinned to a narrow vLLM range. Benchmarks below were collected on internal model checkpoints and are **not currently reproducible from this repo as-is** — see "Limitations" and "Reproducing benchmarks".
+> ## ⚠️ Integration is currently non-functional on default vLLM
+>
+> End-to-end verification on real hardware (vLLM 0.17.1 + RTX 5090 + Qwen2.5-0.5B-Instruct, 2026-04-29) revealed that **the vLLM integration does not actually do anything on a default vLLM configuration**. Three independent issues:
+>
+> 1. **`torch.compile` bypasses our hooks.** vLLM 0.17.x compiles the attention graph by default (`compilation_config.mode = VLLM_COMPILE`). KV writes go through a compiled `vllm::unified_kv_cache_update` op that does not call back into the Python `Impl.do_kv_cache_update` method we monkey-patch. Result: `mode="capture_only"` captures roughly 2 tokens out of 300+ during a real generation. Setting `enforce_eager=True` restores per-token capture but disables CUDA-graph speedups.
+>
+> 2. **Prefix caching evades capture.** Even in eager mode, vLLM's prefix cache (also default-on) reuses uncompressed KV blocks across requests, so TQ never sees the prefill on the second pass. The integration has no path that captures from already-cached blocks.
+>
+> 3. **`mode="hybrid"` ignores the paged KV cache.** When the hybrid branch fires, it computes attention from `state.store.get_flat_cache()` and `state.engine.ring.peek()` — i.e., only what TQ captured — and ignores the paged `kv_cache` tensor that holds the actual prompt. Combined with (1)+(2), hybrid decode produces degenerate output (e.g. `"......\n\n.."` repetition) because the model is attending only to the last few generated tokens.
+>
+> **What this means for the benchmark numbers below**: they were measured against configurations where the hooks did not fire as intended, so they reflect baseline vLLM throughput, not TurboQuant throughput. They should be treated as not-yet-reproduced.
+>
+> **What works today**: the numerical kernels (codebooks, rotation, quantizer, store) are sound and unit-tested on CPU and CUDA. The public API surface (`turboquant.vllm.enable_turboquant`, `free_kv_cache`, `get_stats`) installs cleanly and emits useful errors. `quickstart.py NO_VLLM=1` runs the quantizer math standalone. None of the integration's correctness or performance claims for end-to-end generation are currently verified.
+>
+> **What it would take to fix**: register the capture as a torch op so it survives `torch.compile`, rewrite hybrid attention to combine paged `kv_cache` + TQ store rather than only TQ store, and either capture on prefix-cache hit or require prefix caching off. Realistically 1–2 weeks of focused work; tracked as the next major piece of engineering.
+>
+> The rest of this README is preserved for reference. Adjust your expectations accordingly.
 
-## Benchmark Results
+## Benchmark Results (NOT CURRENTLY REPRODUCIBLE — see notice above)
 
 ### RTX 5090 (32GB) -- Qwen3.5-27B-AWQ (dense, 4-bit weights, TP=1)
 
@@ -244,15 +260,15 @@ Face IDs. To rerun on your own model:
 
 ## Test Results
 
-A formal test suite has not yet been ported into this repo. Treat `proof.py` /
-`benchmark.py` output as the only currently runnable validation path.
+`pytest tests/` runs 94 unit tests covering the quantizer, codebooks, bit-packing, the compressed store, and the public vLLM-shim API surface. CI runs them on Python 3.10/3.11/3.12 (CPU only — CUDA-marked variants are skipped on the runner). The unit tests do **not** cover end-to-end behavior with vLLM; see the integration notice at the top of this README for what's currently broken there.
 
 ## Limitations
 
-- **Prefill still uses paged cache**: KV cache is allocated at engine init and used during prefill. TQ frees it after. True zero-allocation requires deeper vLLM integration.
+- **Integration is broken on default vLLM** (see top-of-README notice). The next four bullets describe the *intended* behavior; treat them as design goals, not guarantees, until the integration issues are fixed.
+- **Prefill still uses paged cache**: KV cache is allocated at engine init and used during prefill. TQ is intended to free it after. True zero-allocation requires deeper vLLM integration.
 - **Only full-attention layers**: Linear-attention/Mamba layers are not compressed.
-- **Value quantization is the bottleneck**: 2-bit values cause cos_sim=0.94 degradation. Use 4-bit values (cos_sim=0.997) for quality-sensitive workloads.
-- **Hybrid decode dequantizes all history**: During compute, all compressed tokens are expanded to float32 and attention runs through `torch.einsum`. There is no fused Triton kernel on the live path; an earlier sketch was removed because nothing in the package called it. Wiring a fused decode kernel into `score._attend_compressed_only` is a known perf win, not yet done.
+- **Value quantization is the bottleneck**: 2-bit values give cos_sim≈0.94 in isolation; 4-bit values give cos_sim≈0.997. Numbers measured on the standalone quantizer, not end-to-end with vLLM.
+- **Hybrid decode dequantizes all history**: When the hybrid branch fires, all compressed tokens are expanded to float32 and attention runs through `torch.einsum`. Empirically ~0.5× baseline tok/s on Qwen2.5-0.5B in eager mode. There is no fused Triton kernel on the live path; an earlier sketch was removed because nothing in the package called it. Wiring a fused decode kernel into `score._attend_compressed_only` is a known perf win, not yet done.
 - **MoE models benefit less**: Models with linear-attention layers (Qwen3.5 MoE, Mamba hybrids) have incompressible state that limits TQ's overall impact.
 
 ## Environment

@@ -165,6 +165,24 @@ def enable_turboquant(
 ) -> dict:
     """Install TurboQuant hooks on every worker behind ``llm``.
 
+    .. warning::
+
+       **Currently non-functional on default vLLM 0.17.x.** vLLM compiles
+       the attention graph (``compilation_config`` default), and the
+       compiled ``vllm::unified_kv_cache_update`` op does not call back
+       into the Python ``Impl.do_kv_cache_update`` method this integration
+       monkey-patches. End-to-end verification on Qwen2.5-0.5B-Instruct on
+       2026-04-29 showed only ~2 of ~300 KV writes captured per generation.
+       Hybrid mode produces degenerate output as a result, since the
+       hybrid attention branch ignores the paged ``kv_cache`` tensor and
+       attends only to TQ's (mostly empty) capture store.
+
+       Workaround: pass ``enforce_eager=True`` to ``vllm.LLM(...)`` and
+       set ``enable_prefix_caching=False`` to make the Python hooks fire.
+       Even then, hybrid mode is ~0.5× baseline tok/s. Treat this entire
+       function as experimental until the capture path is rewritten as a
+       custom torch op.
+
     Parameters
     ----------
     llm
