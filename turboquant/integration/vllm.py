@@ -355,22 +355,29 @@ def _make_patched_forward(orig_fn, state: LayerState, no_alloc: bool = False, ca
                 if q.dim() == 2:
                     q = q.view(num_actual, state.config.num_query_heads, state.config.head_dim)
 
+                # S3.2 — kv_paged segment: K/V for tokens not yet in kv_tq.
+                # At hybrid forward time the post-execute paged-cache reader
+                # (S1.3 / 1C) hasn't fired yet for the current step, so kv_tq
+                # covers tokens 0..N-1 and the current decode token's K/V is
+                # missing. The K/V is already in scope as the forward `key`/
+                # `value` arguments — equivalent to paged_cache[slot_N] at
+                # this point in the pipeline since vLLM has just written it
+                # there — so we feed it through directly without re-reading
+                # the paged cache. See docs/integration-state.md § "S3.1 —
+                # Audit".
+                k_paged = key[:num_actual]
+                v_paged = value[:num_actual]
+                if k_paged.dim() == 2:
+                    k_paged = k_paged.view(num_actual, state.config.num_kv_heads, state.config.head_dim)
+                    v_paged = v_paged.view(num_actual, state.config.num_kv_heads, state.config.head_dim)
+
                 recent = state.engine.ring.peek()
                 recent_k = recent[0] if recent else None
                 recent_v = recent[1] if recent else None
 
-                # S3.1 — audit: emit per-call segment counts so the F3 gap is
-                # grep-able. Today num_paged is structurally 0 because
-                # compute_hybrid_attention's signature has no kv_paged
-                # parameter (turboquant/score.py:31). The current decode
-                # token's K/V is in scope as `key`/`value` but never reaches
-                # the attention compute, which is exactly the F3 bug
-                # (docs/integration-state.md § "F3 …"). Sprint 3 / S3.2
-                # closes this; this trace line is the before-side of the
-                # before/after diff.
                 _trace(
                     state.config.layer_idx,
-                    f"hybrid_segments num_paged=0 num_tq={flat_n} num_ring={ring_n}",
+                    f"hybrid_segments num_paged={num_actual} num_tq={flat_n} num_ring={ring_n}",
                 )
 
                 result = compute_hybrid_attention(
@@ -380,6 +387,8 @@ def _make_patched_forward(orig_fn, state: LayerState, no_alloc: bool = False, ca
                     recent_v=recent_v,
                     num_query_heads=state.config.num_query_heads,
                     scale=getattr(self_impl, "scale", None),
+                    kv_paged_k=k_paged,
+                    kv_paged_v=v_paged,
                 )
 
                 result_flat = result.reshape(num_actual, state.config.num_query_heads * state.config.head_dim).to(
