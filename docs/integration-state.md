@@ -508,6 +508,27 @@ hypothesis above.
 When all three rows are checked, the README's `⚠️` notice gets rewritten
 into the "Verified configuration" section per Sprint 4.
 
+### F2 closure path (b) — capture-on-cache-hit (follow-up, not in scope)
+
+Sprint 2 / S2.1 (commit
+[`4c902f1`](https://github.com/pitcany/vllm-turboquant/commit/4c902f1))
+takes path (a) above: `enable_turboquant` raises `TurboQuantVLLMError`
+when `cache_config.enable_prefix_caching` is `True` and `mode != "off"`,
+unit-tested in `tests/test_vllm_smoke.py::test_rejects_prefix_caching`.
+That closes F2 for Path B Conservative.
+
+Path (b) — making the patched `do_kv_cache_update` (and/or the S1.3
+post-`execute_model` paged-cache reader) *also* fire on prefix-cache
+hits, re-injecting cached K/V into the TQ store so TQ benefits from
+prefix caching instead of being defeated by it — is **out of scope for
+Path B Conservative**. It will be tracked as a separate ticket once
+Sprint 4 closes (i.e., once the memory-savings story has a verified
+baseline that path (b) could be measured against). The work is
+non-trivial: vLLM v1's prefix-cache path lives entirely below the
+hooks we instrument today (block-manager-side, before the model runner
+sees the request), so capturing on a hit needs either a block-manager
+hook or a separate prefix-cache scan at request-construction time.
+
 ---
 
 ## Reproducer
