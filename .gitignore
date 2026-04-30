@@ -9,6 +9,9 @@ build/
 .venv/
 .env
 *.log
+# Trace evidence per docs/plan-path-b.md §2 ("Trace storage: docs/traces/*.log
+# checked in. Evidence-in-repo.") — un-ignore the curated traces.
+!docs/traces/*.log
 /tmp/
 test-output/
 .claude/

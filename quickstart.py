@@ -158,6 +158,11 @@ def main() -> int:
     print()
 
     enforce_eager = bool(os.environ.get("ENFORCE_EAGER"))
+    # ENABLE_PREFIX_CACHING=0 disables vLLM's default prefix cache. Used by
+    # docs/plan-path-b.md S0.2 to capture a trace under
+    # `enforce_eager=True, enable_prefix_caching=False`.
+    prefix_env = os.environ.get("ENABLE_PREFIX_CACHING")
+    enable_prefix_caching = True if prefix_env is None else prefix_env not in ("0", "false", "False", "")
     llm = LLM(
         model=model,
         tensor_parallel_size=tp,
@@ -166,6 +171,7 @@ def main() -> int:
         max_num_seqs=1,
         trust_remote_code=True,
         enforce_eager=enforce_eager,
+        enable_prefix_caching=enable_prefix_caching,
     )
 
     baseline = None
