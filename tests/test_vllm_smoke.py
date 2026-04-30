@@ -125,6 +125,67 @@ def test_resolve_executor_lists_paths_when_none_match() -> None:
     assert "model_executor" in msg
 
 
+@pytest.mark.unit
+def test_rejects_prefix_caching() -> None:
+    """S2.1: enable_turboquant must error loudly when prefix caching is on.
+
+    F2 (see docs/integration-state.md § "F2 — Prefix caching evades capture
+    even in eager mode") shows that vLLM's prefix cache reuses K/V blocks
+    from prior requests, leaving TurboQuant's capture path with only the
+    partial-block remainder of each prefill. Path B Conservative's chosen
+    closure (per docs/plan-path-b.md §3 / Sprint 2 and §4) is to refuse the
+    configuration at enable_turboquant time rather than ship silent
+    misbehaviour. The capture-on-cache-hit alternative is out of scope.
+    """
+    from turboquant.vllm import TurboQuantVLLMError, enable_turboquant
+
+    class _CacheCfg:
+        enable_prefix_caching = True
+
+    class _VllmCfg:
+        cache_config = _CacheCfg()
+
+    class FakeEngine:
+        vllm_config = _VllmCfg()
+
+        def collective_rpc(self, fn):  # pragma: no cover - guard fires first
+            raise AssertionError("guard must fire before collective_rpc")
+
+    class FakeLLM:
+        llm_engine = FakeEngine()
+
+    with pytest.raises(TurboQuantVLLMError, match="prefix"):
+        enable_turboquant(FakeLLM(), mode="hybrid")
+
+
+@pytest.mark.unit
+def test_off_mode_allows_prefix_caching() -> None:
+    """S2.1 corollary: mode="off" must not raise even with prefix caching on.
+
+    Off-mode is a passthrough (TQ does nothing), so prefix caching can't
+    evade what TQ isn't doing. Per the plan: "if True and mode != 'off'".
+    """
+    from turboquant.vllm import enable_turboquant
+
+    class _CacheCfg:
+        enable_prefix_caching = True
+
+    class _VllmCfg:
+        cache_config = _CacheCfg()
+
+    class FakeEngine:
+        vllm_config = _VllmCfg()
+
+        def collective_rpc(self, fn):
+            return [0]  # pretend zero hooks installed; off-mode is a no-op
+
+    class FakeLLM:
+        llm_engine = FakeEngine()
+
+    info = enable_turboquant(FakeLLM(), mode="off")
+    assert info["mode"] == "off"
+
+
 @pytest.mark.integration
 def test_smoke_with_vllm_if_available() -> None:
     """If vLLM is installed, importing the integration module shouldn't crash."""

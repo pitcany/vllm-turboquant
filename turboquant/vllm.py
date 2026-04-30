@@ -231,6 +231,26 @@ def enable_turboquant(
     vllm_version = _check_vllm_version()
     executor = _resolve_executor(llm)
 
+    # F2 guard (Sprint 2 / S2.1). Prefix caching reuses K/V blocks from
+    # earlier requests, so TurboQuant's capture path only ever sees the
+    # partial-block remainder of each prefill — an empirically-confirmed
+    # silent-misbehaviour mode. See docs/integration-state.md § "F2".
+    # Off-mode is a passthrough (TQ does nothing), so prefix caching can't
+    # evade what TQ isn't doing; only refuse when the user actually wants
+    # capture or hybrid behaviour.
+    if internal_mode != "off":
+        engine = getattr(llm, "llm_engine", None)
+        vllm_cfg = getattr(engine, "vllm_config", None)
+        cache_cfg = getattr(vllm_cfg, "cache_config", None)
+        if getattr(cache_cfg, "enable_prefix_caching", False):
+            raise TurboQuantVLLMError(
+                "vLLM was constructed with enable_prefix_caching=True, which "
+                "evades TurboQuant's capture path (only the partial-block "
+                "remainder of each prefill enters the TQ store). Set "
+                "enable_prefix_caching=False on LLM(...) until "
+                "capture-on-cache-hit is implemented."
+            )
+
     # Bind the config into a closure that runs on each worker process.
     cfg = dict(
         key_bits=key_bits,
