@@ -166,11 +166,21 @@ def _is_mla_impl(impl) -> bool:
 
 
 def _make_patched_kv_update(orig_fn, state: LayerState, no_alloc: bool = False):
-    """Intercept KV cache writes to capture into TQ store."""
+    """Intercept KV cache writes to capture prefill K/V into TQ store.
+
+    Decode-token capture (``num_tokens <= 1``) is *not* handled here anymore
+    — see ``install_post_execute_callback`` (Path B Sprint 1 / S1.3 / 1C).
+    Reasoning: under default vLLM compilation the decode path runs as a
+    FULL CUDAGraph replay, which bypasses any Python hook (including this
+    monkey-patch) by construction (``vllm/compilation/cuda_graph.py:208–323``,
+    documented in ``docs/integration-state.md`` § "F1bis"). The per-step
+    paged-cache reader installed by ``install_post_execute_callback`` is the
+    only decode-capture path that survives. Routing both here would
+    double-ingest under PIECEWISE / eager modes.
+    """
 
     def patched(self_impl, layer, key, value, kv_cache, slot_mapping):
         if not no_alloc:
-            # Standard mode: keep paged cache behavior.
             orig_fn(self_impl, layer, key, value, kv_cache, slot_mapping)
 
         mode = _GLOBAL_MODE
@@ -181,11 +191,8 @@ def _make_patched_kv_update(orig_fn, state: LayerState, no_alloc: bool = False):
             return
 
         if num_tokens <= 1:
-            # Decode token — append to ring buffer
-            state.engine.ingest_decode(key, value, num_tokens)
-        else:
-            # Prefill — bulk capture
-            state.engine.ingest_prefill(key, value, num_tokens)
+            return
+        state.engine.ingest_prefill(key, value, num_tokens)
 
     return patched
 
@@ -427,6 +434,127 @@ def _make_patched_mla_forward(orig_fn, state: LayerState):
 
 
 # ---------------------------------------------------------------------------
+# Post-execute paged-cache reader (S1.3 / 1C — survives FULL CUDAGraph)
+# ---------------------------------------------------------------------------
+
+
+def _make_post_execute_callback(model_runner):
+    """Build the per-step paged-cache reader callback for decode-only steps.
+
+    Reads the ``slot_mappings`` snapshot left on
+    ``model_runner.execute_model_state`` (vllm 0.17.1
+    ``v1/worker/gpu_model_runner.py:3706``), gathers the just-written K/V
+    from each TQ-hooked layer's paged ``kv_cache`` tensor, and feeds it into
+    ``state.engine.ingest_decode``. Runs after ``execute_model`` returns —
+    i.e. after ``cudagraph.replay()`` has handed control back to Python — so
+    it survives FULL CUDAGraph replay where every Python-level hook inside
+    the captured region is bypassed by construction (see
+    ``docs/integration-state.md`` § "F1bis").
+    """
+
+    layer_states = model_runner._tq_layer_states
+    static_ctx = model_runner.compilation_config.static_forward_context
+
+    def callback(scheduler_output) -> None:
+        if not layer_states:
+            return
+
+        # Gate: only run on decode-only steps. Prefill / chunked-prefill
+        # steps run under PIECEWISE mode and are already ingested by the
+        # do_kv_cache_update monkey-patch. Letting both fire would
+        # double-ingest the chunk.
+        ns = getattr(scheduler_output, "num_scheduled_tokens", None)
+        if not ns:
+            return
+        if max(ns.values()) > 1:
+            return
+        num_actual = scheduler_output.total_num_scheduled_tokens
+        if num_actual <= 0:
+            return
+
+        emstate = getattr(model_runner, "execute_model_state", None)
+        if emstate is None:
+            return
+        slot_mappings = getattr(emstate, "slot_mappings", None)
+        if not slot_mappings:
+            return
+        if isinstance(slot_mappings, list):
+            sm_layer = slot_mappings[0] if slot_mappings else None
+        else:
+            sm_layer = slot_mappings
+        if not isinstance(sm_layer, dict):
+            return
+
+        for layer_name, state in layer_states.items():
+            if not state.supports_hybrid:
+                continue
+            attn_module = static_ctx.get(layer_name)
+            if attn_module is None:
+                continue
+            kv_list = getattr(attn_module, "kv_cache", None)
+            if not kv_list:
+                continue
+            kv_cache_tensor = kv_list[0]
+            # Flash backend layout: (2, num_blocks, block_size, num_kv_heads, head_dim).
+            # The first dim splits K and V; see
+            # vllm/v1/attention/backends/flash_attn.py:791 (`kv_cache.unbind(0)`).
+            if kv_cache_tensor.dim() != 5 or kv_cache_tensor.shape[0] != 2:
+                continue
+
+            slot_mapping = sm_layer.get(layer_name)
+            if slot_mapping is None:
+                continue
+            slot_mapping = slot_mapping[:num_actual]
+            if slot_mapping.dtype != torch.int64:
+                slot_mapping = slot_mapping.to(torch.int64)
+
+            num_kv_heads = kv_cache_tensor.shape[-2]
+            head_dim = kv_cache_tensor.shape[-1]
+            key_cache = kv_cache_tensor[0]
+            value_cache = kv_cache_tensor[1]
+            key_flat = key_cache.reshape(-1, num_kv_heads, head_dim)
+            value_flat = value_cache.reshape(-1, num_kv_heads, head_dim)
+            k = key_flat.index_select(0, slot_mapping)
+            v = value_flat.index_select(0, slot_mapping)
+            _trace(
+                state.config.layer_idx,
+                f"paged_read num_tokens={num_actual}",
+            )
+            state.engine.ingest_decode(k, v, num_actual)
+
+    return callback
+
+
+def install_post_execute_callback(model_runner) -> None:
+    """Wrap ``model_runner.execute_model`` so a per-step paged-cache reader
+    fires right after each forward pass returns.
+
+    This is the FULL-CUDAGraph-safe decode-capture path landed in Path B
+    Sprint 1 / S1.3 (plan-path-b.md §3 / S1.3, anchored on
+    ``vllm/compilation/cuda_graph.py:208–323``). Idempotent — repeated calls
+    are no-ops once the wrapper is installed.
+    """
+
+    if getattr(model_runner, "_tq_post_execute_installed", False):
+        return
+    callback = _make_post_execute_callback(model_runner)
+    orig_execute_model = model_runner.execute_model
+
+    def wrapped_execute_model(scheduler_output, *args, **kwargs):
+        result = orig_execute_model(scheduler_output, *args, **kwargs)
+        try:
+            with torch.inference_mode():
+                callback(scheduler_output)
+        except Exception:
+            logger.exception("[TurboQuant] post-execute paged-cache reader failed")
+        return result
+
+    model_runner.execute_model = wrapped_execute_model
+    model_runner._tq_post_execute_installed = True
+    logger.info("[TurboQuant] post-execute paged-cache reader installed (S1.3 / 1C)")
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -537,6 +665,7 @@ def install_hooks(
     model_runner._tq_layer_states = layer_states
     model_runner._tq_no_alloc = no_alloc
     logger.info(f"[TurboQuant] Hooks on {len(layer_states)} layers (mode={mode}, no_alloc={no_alloc})")
+    install_post_execute_callback(model_runner)
     return layer_states
 
 
