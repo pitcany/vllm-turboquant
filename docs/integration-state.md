@@ -617,18 +617,103 @@ on `meta-llama/Llama-3.2-1B-Instruct`** (HTTP 403 GatedRepoError, manual
 gate, request not yet granted). Do not mark F3 closed in §4 until the
 Llama agreement number lands.
 
-**Coverage gap in the e2e probe.** `tests/test_correctness_e2e.py` uses
-`buffer_size=128` and a short ~50-token prompt, which keeps the entire
-prefill+decode in `kv_ring` and never reaches `MIN_HISTORY_FOR_TQ=16`
-in `kv_tq` — so `took_compressed_path=False` for every layer, every
-step, and the hybrid_compressed branch (the one S3.2 changed) is never
-entered. Confirmed by `grep took_compressed_path /tmp/tq_probe_*.log`
-on a Qwen-0.5B run: 1,512 lines all `took_compressed_path=False`. Any
-future "the probe got X% agreement" claim should be paired with a
-non-zero count of `branch=hybrid_compressed` lines from the same run,
-or it isn't testing what it claims to. A follow-up should switch the
-probe to the LONG_PROMPT + `buffer_size=16` config that actually
-exercises the path; deferred so this commit stays one-change-per-§1.8.
+**Coverage gap in the e2e probe (closed in S3.3).** Pre-S3.3
+`tests/test_correctness_e2e.py` used `buffer_size=128` and a short
+~50-token prompt, which kept the entire prefill+decode in `kv_ring`
+and never reached `MIN_HISTORY_FOR_TQ=16` in `kv_tq` — so
+`took_compressed_path=False` for every layer, every step, and the
+hybrid_compressed branch (the one S3.2 changed) was never entered.
+The Qwen-0.5B run cited in the table above produced 1,512 lines all
+`took_compressed_path=False`. S3.3 swaps the probe to the
+`LONG_PROMPT + buffer_size=16` config (matching the canonical Sprint 1
+workload + `s0_eager_no_prefix.log`), with `TQ_E2E_BUFFER_SIZE` env
+override in case future tests want a different shape. Now any "the
+probe got X% agreement" claim is paired with a non-zero count of
+`branch=hybrid_compressed` lines from the same run.
+
+### S3.3 — Formal F3 number on Llama-3.2-1B-Instruct: stop-loss
+
+S3.3 ran the rewritten probe (`tests/test_correctness_e2e.py` with
+`LONG_PROMPT` + `buffer_size=16`) against
+`meta-llama/Llama-3.2-1B-Instruct` once HF Hub access for `pitcany`
+landed (config.json downloads OK as of 2026-04-30). Captured artefact:
+[`docs/traces/s3_eager_no_prefix_llama1b.log`](traces/s3_eager_no_prefix_llama1b.log).
+
+**Result.**
+
+```text
+# model=meta-llama/Llama-3.2-1B-Instruct
+# max_tokens=256
+# buffer_size=16
+# baseline_len=256
+# tq_len=13
+# compared=13
+# top1_agreement=0.0769
+# first_divergence=1
+```
+
+The TQ pass emits Llama's EOS token (`128009`) at decode position 12
+and stops — short of the 256-token horizon. **Top-1 agreement on the
+13 tokens that exist: 1/13 = 7.69%; first divergence at position 1.**
+
+**The combiner is still correct under this run.** The hybrid_compressed
+branch fires every layer × step:
+
+```text
+[TQ-TRACE] turboquant.trace pid=… layer=0 hybrid_segments num_paged=1 num_tq=211 num_ring=16
+…
+208 hybrid_segments lines (= 13 decode steps × 16 Llama layers)
+```
+
+Same `num_paged=1` pattern as Qwen-0.5B's
+`s3_eager_no_prefix_qwen.log`: kv_paged is contributing the current
+decode token, kv_tq is contributing 211 captured historical tokens,
+kv_ring is contributing the 16 most-recent buffered exact tokens. The
+6 unit tests in [`tests/test_score.py`](../tests/test_score.py) prove
+the streaming softmax math is identical to a single softmax over the
+concatenation. **The combiner code is doing what it says.**
+
+**This hits the docs/plan-path-b.md §5 second-bullet stop-loss
+exactly.** Quoting verbatim:
+
+> *End of Sprint 3, if hybrid 3A produces > 30% top-1 disagreement
+> even with full capture and prefix caching off. The underlying TQ
+> approach (3-bit key + 2-bit value at 1B scale) may not be
+> quality-viable at this size; escalate to `value_bits=4` or skip
+> hybrid entirely (capture-only + free_kv_cache for memory-only wins).*
+
+7.69% agreement = 92.31% disagreement, ~3× the §5 threshold. On the
+plan's verification model. With combiner math verified correct. With
+all three segments confirmed contributing each call. The conclusion
+the plan §5 anticipates is the only one the evidence supports:
+**3-bit-key + 2-bit-value is not quality-viable at 1B scale on
+Llama-3.2.**
+
+**F3 closure status remains open.** Plan §4's F3 row reads:
+
+> *A future `s3_compiled.log` (or `s3_eager_no_prefix.log`) shows
+> top-1 token agreement ≥ 95% between baseline vLLM and TQ-hybrid on a
+> 256-token greedy decode against Llama-3.2-1B-Instruct, evidenced by
+> tests/test_correctness_e2e.py passing.*
+
+This run produces the trace the row asks for, but the agreement number
+falls a full order of magnitude short of the 95% bar. F3 is **not**
+closed. The §5 stop-loss is engaged; the next move is a §5 pivot
+decision (out of scope for Sprint 3, deferred to the user):
+
+| §5 branch | What it costs | What it buys |
+|---|---|---|
+| `value_bits=4` (still hybrid) | ~33% more bytes per V token; same K precision | More V fidelity. Plausibly clears 95% on Llama-1B; unverified. |
+| `key_bits=4 value_bits=4` | ~33% more bytes per K *and* V; doubles V; ~50% more KV memory total | Maximally K fidelity. Removes most of TQ's compression upside. |
+| Capture-only + `free_kv_cache` (memory-only) | Drop hybrid attention compute path entirely; correctness is baseline-by-construction | The actual point of the project — VRAM savings — without the unfused-einsum perf hit. Becomes the Sprint 4 target. |
+| Re-architect (§5 first bullet) | Largest scope | TQ as a separate inference engine or vLLM plugin; discard the monkey-patch surface. |
+
+The §5 third option (capture-only + free_kv_cache for memory-only
+wins) is the one Sprint 4 was already scoped against, and it is the
+only branch that yields a verifiable artefact (real VRAM savings)
+without a research pivot on the bit budget. Recommend taking it as
+the default unless the user wants to spend the bit-budget budget on
+clearing hybrid 95%.
 
 ---
 

@@ -69,11 +69,38 @@ pytestmark = [
 MODEL = os.environ.get("TQ_E2E_MODEL", "meta-llama/Llama-3.2-1B-Instruct")
 MAX_TOKENS = int(os.environ.get("TQ_E2E_MAX_TOKENS", "256"))
 AGREEMENT_THRESHOLD = float(os.environ.get("TQ_E2E_THRESHOLD", "0.95"))
+# buffer_size MUST be small enough that the prefill overflows it into kv_tq —
+# otherwise everything sits in kv_ring, kv_tq stays at 0, and the
+# hybrid_compressed branch (the one Sprint 3 / S3.2 fixes) is never entered.
+# See docs/integration-state.md § "Coverage gap in the e2e probe": the prior
+# default of 128 + the prior short prompt left took_compressed_path=False on
+# every call, masking any failure on Llama and producing a vacuous 100%
+# agreement on Qwen. 16 matches the canonical Sprint 1 workload.
+BUFFER_SIZE = int(os.environ.get("TQ_E2E_BUFFER_SIZE", "16"))
+# A long prompt (≈ 226 tokens on Qwen-0.5B's tokenizer) so prefill
+# > MIN_HISTORY_FOR_TQ even with prefix caching off. Same prompt as
+# quickstart.py's LONG_PROMPT and tests/test_vllm_smoke.py's S1.4 smoke,
+# so traces produced by this probe are directly comparable to s0_*, s1_*,
+# and s3_eager_no_prefix_qwen.log.
 PROMPT = (
-    "You are a careful technical writer. Explain in concrete steps how "
-    "key-value cache compression in transformer inference trades off "
-    "memory, throughput, and quality. Use precise numbers where possible. "
-    "Do not use bullet lists. Begin with a single-sentence thesis."
+    "You are a careful technical writer. Write a thorough, step-by-step "
+    "explanation of the following request, citing concrete numbers where "
+    "possible and clearly distinguishing what is observed from what is "
+    "speculated. The audience is an experienced systems engineer who is "
+    "skeptical of marketing claims. Avoid bullet lists; use paragraphs. "
+    "Do not repeat the request back. Begin with a single-sentence thesis.\n\n"
+    "Request: explain how KV cache compression in transformer inference "
+    "(per-token quantization, low-rank projections, or a combination) "
+    "trades off memory savings against decoding throughput and output "
+    "quality. Cover (a) what is in the cache and why, (b) why naive "
+    "uniform quantization underperforms compared to rotation-then-quantize "
+    "schemes such as Lloyd-Max on the Beta distribution arising from "
+    "random orthogonal rotation of unit-norm vectors, (c) how unbiased "
+    "inner-product estimators using residual sign bits (QJL-style) keep "
+    "attention scores faithful, and (d) what concrete throughput and "
+    "memory numbers a practitioner should expect on modern hardware "
+    "running a 7B-parameter model at long context.\n\n"
+    "Now write the explanation. Be precise. Be honest. Be brief."
 )
 
 
@@ -122,7 +149,7 @@ def test_top1_agreement_baseline_vs_tq_hybrid(capfd) -> None:
         llm,
         key_bits=3,
         value_bits=2,
-        buffer_size=128,
+        buffer_size=BUFFER_SIZE,
         mode="hybrid",
     )
     tq_tokens = _greedy_token_ids(llm, PROMPT)
@@ -131,6 +158,10 @@ def test_top1_agreement_baseline_vs_tq_hybrid(capfd) -> None:
     assert n > 0, f"empty token sequences: baseline={baseline_tokens!r} tq={tq_tokens!r}"
     matches = sum(1 for a, b in zip(baseline_tokens[:n], tq_tokens[:n]) if a == b)
     agreement = matches / n
+    first_div = next(
+        (i for i, (a, b) in enumerate(zip(baseline_tokens[:n], tq_tokens[:n])) if a != b),
+        n,
+    )
 
     # Persist a probe artefact for after-the-fact grep. capfd has been
     # capturing fd-level stderr since this test started, so the captured
@@ -142,11 +173,13 @@ def test_top1_agreement_baseline_vs_tq_hybrid(capfd) -> None:
         "# tq probe artefact (S0.4 of docs/plan-path-b.md)\n"
         f"# model={MODEL}\n"
         f"# max_tokens={MAX_TOKENS}\n"
+        f"# buffer_size={BUFFER_SIZE}\n"
         f"# threshold={AGREEMENT_THRESHOLD}\n"
         f"# baseline_len={len(baseline_tokens)}\n"
         f"# tq_len={len(tq_tokens)}\n"
         f"# compared={n}\n"
         f"# top1_agreement={agreement:.4f}\n"
+        f"# first_divergence={first_div}\n"
         f"# baseline_tokens_head={baseline_tokens[:32]}\n"
         f"# tq_tokens_head={tq_tokens[:32]}\n"
         "\n=== captured stderr ===\n"
@@ -155,7 +188,8 @@ def test_top1_agreement_baseline_vs_tq_hybrid(capfd) -> None:
 
     # Re-emit a single summary line on stderr for human readers under -s.
     print(
-        f"[tq-e2e] model={MODEL} compared={n} top1_agreement={agreement:.4f} "
+        f"[tq-e2e] model={MODEL} buffer_size={BUFFER_SIZE} compared={n} "
+        f"top1_agreement={agreement:.4f} first_divergence={first_div} "
         f"threshold={AGREEMENT_THRESHOLD} probe={probe_path}",
         file=sys.stderr,
     )
