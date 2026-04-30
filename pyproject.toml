@@ -4,6 +4,7 @@ addopts = "-ra"
 markers = [
     "unit: fast, no GPU/vLLM required",
     "integration: requires vLLM and/or a GPU",
+    "cuda: requires a CUDA-capable GPU (skipped on CPU CI)",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning:torch",
