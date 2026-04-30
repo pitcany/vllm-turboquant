@@ -24,11 +24,7 @@ def beta_pdf(x: np.ndarray, d: int) -> np.ndarray:
         # d=1: point mass at +-1, d=2: arcsine distribution
         # For practical purposes (d >= 64 for head_dim), we won't hit this
         raise ValueError(f"Dimension d={d} too small, need d >= 3")
-    log_const = (
-        special.gammaln(d / 2.0)
-        - 0.5 * np.log(np.pi)
-        - special.gammaln((d - 1) / 2.0)
-    )
+    log_const = special.gammaln(d / 2.0) - 0.5 * np.log(np.pi) - special.gammaln((d - 1) / 2.0)
     exponent = (d - 3) / 2.0
     # Clip x to avoid numerical issues at boundaries
     x = np.clip(x, -1 + 1e-15, 1 - 1e-15)
@@ -58,9 +54,7 @@ def _mse_cost(centroids: np.ndarray, d: int) -> float:
     for i in range(n):
         lo, hi = boundaries[i], boundaries[i + 1]
         c = centroids[i]
-        val, _ = integrate.quad(
-            lambda x: (x - c) ** 2 * beta_pdf(np.array([x]), d)[0], lo, hi
-        )
+        val, _ = integrate.quad(lambda x: (x - c) ** 2 * beta_pdf(np.array([x]), d)[0], lo, hi)
         cost += val
     return cost
 

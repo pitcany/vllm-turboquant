@@ -5,6 +5,7 @@ TurboQuant definitive proof. Two separate subprocesses:
   2. TurboQuant + free_kv_cache
 Hard numbers side by side.
 """
+
 import json
 import os
 import subprocess
@@ -195,15 +196,15 @@ def main():
     print(f"    KV cache blocks:         {tq['blocks']}  (same initial alloc)")
     print(f"    VRAM/GPU after gen:      {tq_v} MB")
     print(f"    VRAM/GPU after free:     {tq_f} MB")
-    print(f"    Tensor freed/GPU:        {freed_per/1e6:.0f} MB")
-    print(f"    Total tensor freed:      {freed_total/1e6:.0f} MB ({freed_total/1e9:.1f} GB)")
+    print(f"    Tensor freed/GPU:        {freed_per / 1e6:.0f} MB")
+    print(f"    Total tensor freed:      {freed_total / 1e6:.0f} MB ({freed_total / 1e9:.1f} GB)")
     print()
     print("  RESULT")
-    print(f"    KV VRAM saved/GPU:       {freed_per/1e6:.0f} MB")
+    print(f"    KV VRAM saved/GPU:       {freed_per / 1e6:.0f} MB")
     print(f"    Extra blocks possible:   {extra_blocks}")
     print(f"    Baseline capacity:       {bl_tokens:,} tokens")
     print(f"    With TQ capacity:        {new_tokens:,} tokens")
-    print(f"    Improvement:             {new_tokens/bl_tokens:.2f}x context length")
+    print(f"    Improvement:             {new_tokens / bl_tokens:.2f}x context length")
     print()
     print("  OUTPUT COMPARISON")
     print(f"    Baseline: {bl['text']}")

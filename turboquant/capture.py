@@ -52,12 +52,8 @@ class RingBuffer:
         self.device = device
         self.dtype = dtype
 
-        self._k = torch.zeros(
-            capacity, num_kv_heads, head_dim, device=device, dtype=dtype
-        )
-        self._v = torch.zeros(
-            capacity, num_kv_heads, head_dim, device=device, dtype=dtype
-        )
+        self._k = torch.zeros(capacity, num_kv_heads, head_dim, device=device, dtype=dtype)
+        self._v = torch.zeros(capacity, num_kv_heads, head_dim, device=device, dtype=dtype)
         self._pos = 0
         self._total_written = 0
 

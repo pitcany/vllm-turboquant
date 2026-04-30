@@ -22,18 +22,20 @@ from turboquant.rotation import (
 
 class MSEQuantized(NamedTuple):
     """Output of TurboQuant MSE quantization."""
-    indices: torch.Tensor       # (..., packed_len) uint8 bit-packed indices
-    norms: torch.Tensor         # (...,) original L2 norms
-    bits: int                   # number of bits per index (for unpacking)
+
+    indices: torch.Tensor  # (..., packed_len) uint8 bit-packed indices
+    norms: torch.Tensor  # (...,) original L2 norms
+    bits: int  # number of bits per index (for unpacking)
 
 
 class ProdQuantized(NamedTuple):
     """Output of TurboQuant inner-product quantization."""
-    mse_indices: torch.Tensor   # (..., packed_len) uint8 bit-packed MSE indices
-    qjl_signs: torch.Tensor    # (..., packed_len) uint8 packed sign bits
+
+    mse_indices: torch.Tensor  # (..., packed_len) uint8 bit-packed MSE indices
+    qjl_signs: torch.Tensor  # (..., packed_len) uint8 packed sign bits
     residual_norms: torch.Tensor  # (...,) L2 norms of residual vectors
-    norms: torch.Tensor         # (...,) original L2 norms
-    mse_bits: int               # bits per MSE index (for unpacking)
+    norms: torch.Tensor  # (...,) original L2 norms
+    mse_bits: int  # bits per MSE index (for unpacking)
 
 
 def _pack_indices(indices: torch.Tensor, bits: int) -> torch.Tensor:
@@ -86,7 +88,7 @@ def _unpack_indices(packed: torch.Tensor, bits: int, d: int) -> torch.Tensor:
 
     mask = (1 << bits) - 1
     shifts = torch.arange(vals_per_byte, device=packed.device, dtype=torch.uint8) * bits
-    unpacked = ((packed.unsqueeze(-1) >> shifts) & mask)
+    unpacked = (packed.unsqueeze(-1) >> shifts) & mask
     unpacked = unpacked.reshape(*batch_shape, -1)
     return unpacked[..., :d].long()
 
@@ -116,14 +118,12 @@ class TurboQuantMSE(torch.nn.Module):
         self.device = device
 
         # Precompute rotation matrix
-        self.register_buffer(
-            "Pi", generate_rotation_matrix(dim, self.device, dtype, seed=seed)
-        )
+        self.register_buffer("Pi", generate_rotation_matrix(dim, self.device, dtype, seed=seed))
 
         # Precompute codebook
         centroids, boundaries = get_codebook_tensors(dim, bits, self.device, dtype)
-        self.register_buffer("centroids", centroids)      # (2^b,)
-        self.register_buffer("boundaries", boundaries)    # (2^b + 1,)
+        self.register_buffer("centroids", centroids)  # (2^b,)
+        self.register_buffer("boundaries", boundaries)  # (2^b + 1,)
 
         # Precompute interior boundaries for fast searchsorted
         # boundaries[1:-1] are the decision boundaries between clusters
@@ -207,14 +207,10 @@ class TurboQuantProd(torch.nn.Module):
         assert bits >= 2, "Inner product TurboQuant requires at least 2 bits (1 for MSE + 1 for QJL)"
 
         # Stage 1: MSE quantizer at (b-1) bits
-        self.mse_quantizer = TurboQuantMSE(
-            dim=dim, bits=bits - 1, device=self.device, dtype=dtype, seed=seed
-        )
+        self.mse_quantizer = TurboQuantMSE(dim=dim, bits=bits - 1, device=self.device, dtype=dtype, seed=seed)
 
         # Stage 2: QJL projection matrix S ∈ R^{d×d}
-        self.register_buffer(
-            "S", generate_qjl_matrix(dim, self.device, dtype, seed=seed + 1000)
-        )
+        self.register_buffer("S", generate_qjl_matrix(dim, self.device, dtype, seed=seed + 1000))
 
         # QJL dequantization constant
         self.qjl_scale = math.sqrt(math.pi / 2.0) / dim
@@ -233,7 +229,7 @@ class TurboQuantProd(torch.nn.Module):
         """Unpack sign bits from uint8 to float {-1, +1}."""
         powers = torch.tensor([1, 2, 4, 8, 16, 32, 64, 128], device=packed.device, dtype=torch.uint8)
         unpacked = ((packed.unsqueeze(-1) & powers) > 0).float()
-        signs = unpacked.reshape(*packed.shape[:-1], -1)[..., :self.dim]
+        signs = unpacked.reshape(*packed.shape[:-1], -1)[..., : self.dim]
         return 2.0 * signs - 1.0
 
     def quantize(self, x: torch.Tensor) -> ProdQuantized:
@@ -298,8 +294,7 @@ class TurboQuantProd(torch.nn.Module):
             scores: (..., n_q, n_k) — the attention logits
         """
         # Stage 1: MSE contribution
-        mse_q = MSEQuantized(indices=quantized_key.mse_indices, norms=quantized_key.norms,
-                             bits=quantized_key.mse_bits)
+        mse_q = MSEQuantized(indices=quantized_key.mse_indices, norms=quantized_key.norms, bits=quantized_key.mse_bits)
         k_mse = self.mse_quantizer.dequantize(mse_q)
         scores_mse = torch.matmul(query.float(), k_mse.float().transpose(-2, -1))
 

@@ -60,26 +60,32 @@ def compute_hybrid_attention(
 
     if not has_history and not has_recent:
         return torch.zeros(
-            query.shape[0], num_query_heads, head_dim,
-            device=query.device, dtype=query.dtype,
+            query.shape[0],
+            num_query_heads,
+            head_dim,
+            device=query.device,
+            dtype=query.dtype,
         )
 
     gqa_ratio = num_query_heads // num_kv_heads
 
     if has_history and not has_recent:
-        return _attend_compressed_only(
-            query, flat, store.quantizer, gqa_ratio, num_kv_heads, scale
-        )
+        return _attend_compressed_only(query, flat, store.quantizer, gqa_ratio, num_kv_heads, scale)
 
     if not has_history and has_recent:
-        return _attend_exact_only(
-            query, recent_k, recent_v, gqa_ratio, num_kv_heads, scale
-        )
+        return _attend_exact_only(query, recent_k, recent_v, gqa_ratio, num_kv_heads, scale)
 
     # Both segments present — merge via log-sum-exp trick
     return _attend_hybrid(
-        query, flat, store.quantizer, recent_k, recent_v,
-        gqa_ratio, num_kv_heads, head_dim, scale,
+        query,
+        flat,
+        store.quantizer,
+        recent_k,
+        recent_v,
+        gqa_ratio,
+        num_kv_heads,
+        head_dim,
+        scale,
     )
 
 
@@ -108,8 +114,12 @@ def _attend_exact_only(
 ) -> torch.Tensor:
     """Attention over exact recent buffer only."""
     return _matmul_attend(
-        query, recent_k.transpose(0, 1), recent_v.transpose(0, 1),
-        gqa_ratio, num_kv_heads, scale,
+        query,
+        recent_k.transpose(0, 1),
+        recent_v.transpose(0, 1),
+        gqa_ratio,
+        num_kv_heads,
+        scale,
     )
 
 
@@ -128,7 +138,7 @@ def _attend_hybrid(
     k_hist = quantizer.dequantize(flat.prod_q)  # (H_kv, N_hist, D)
     v_hist = dequantize_values(flat.value_q, 32)
 
-    k_recent = recent_k.transpose(0, 1)   # (H_kv, N_recent, D)
+    k_recent = recent_k.transpose(0, 1)  # (H_kv, N_recent, D)
     v_recent = recent_v.transpose(0, 1)
 
     k_all = torch.cat([k_hist.float(), k_recent.float()], dim=1)
@@ -156,15 +166,13 @@ def _matmul_attend(
     T, Q, D = query.shape
     H_kv = num_kv_heads
     if Q != H_kv * gqa_ratio:
-        raise ValueError(
-            f"Incompatible GQA shapes: Q={Q}, H_kv={H_kv}, gqa_ratio={gqa_ratio}"
-        )
+        raise ValueError(f"Incompatible GQA shapes: Q={Q}, H_kv={H_kv}, gqa_ratio={gqa_ratio}")
 
     # Avoid repeat_interleave(Q/H) on KV tensors to keep memory bounded at long context.
     # q: (T, Q, D) -> (H_kv, G, T, D)
     q = query.float().view(T, H_kv, gqa_ratio, D).permute(1, 2, 0, 3)
-    k = kv_keys.float().unsqueeze(1)   # (H_kv, 1, N, D) broadcast over G
-    v = kv_values.float().unsqueeze(1) # (H_kv, 1, N, D) broadcast over G
+    k = kv_keys.float().unsqueeze(1)  # (H_kv, 1, N, D) broadcast over G
+    v = kv_values.float().unsqueeze(1)  # (H_kv, 1, N, D) broadcast over G
 
     # scores: (H_kv, G, T, N)
     scores = torch.einsum("hgtd,hgnd->hgtn", q, k) * scale

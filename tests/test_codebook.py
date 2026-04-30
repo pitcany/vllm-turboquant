@@ -55,22 +55,16 @@ def test_codebook_well_formed(d: int, bits: int, path: Path) -> None:
     assert len(boundaries) == n_clusters + 1, f"{path.name} boundaries length"
 
     # centroids must be strictly increasing
-    assert all(a < b for a, b in zip(centroids, centroids[1:])), (
-        f"{path.name} centroids not strictly increasing"
-    )
+    assert all(a < b for a, b in zip(centroids, centroids[1:])), f"{path.name} centroids not strictly increasing"
 
     # boundaries must be sorted, start at -1, end at +1
     assert boundaries[0] == pytest.approx(-1.0)
     assert boundaries[-1] == pytest.approx(1.0)
-    assert all(a <= b for a, b in zip(boundaries, boundaries[1:])), (
-        f"{path.name} boundaries not sorted"
-    )
+    assert all(a <= b for a, b in zip(boundaries, boundaries[1:])), f"{path.name} boundaries not sorted"
 
     # each centroid lies inside its bucket
     for i, c in enumerate(centroids):
-        assert boundaries[i] <= c <= boundaries[i + 1], (
-            f"{path.name}: centroid {i} ({c}) outside its bucket"
-        )
+        assert boundaries[i] <= c <= boundaries[i + 1], f"{path.name}: centroid {i} ({c}) outside its bucket"
 
     assert cb["mse_per_coord"] > 0
 

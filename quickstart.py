@@ -70,14 +70,14 @@ def _no_vllm_path() -> int:
     true = y @ x.T
     err = (est - true).abs().mean().item()
     rel = err / true.abs().mean().clamp_min(1e-9).item()
-    print(f"[no-vllm] Prod 3-bit attention-score mean abs err: "
-          f"{err:.4f} (rel {rel:.2%})")
+    print(f"[no-vllm] Prod 3-bit attention-score mean abs err: {err:.4f} (rel {rel:.2%})")
     print("[no-vllm] OK")
     return 0
 
 
 def _run_pass(llm, label: str) -> dict:
     from vllm import SamplingParams
+
     sp = SamplingParams(temperature=0, max_tokens=64)
     t0 = time.perf_counter()
     out = llm.generate([PROMPT], sp)
@@ -97,9 +97,10 @@ def main() -> int:
     try:
         from vllm import LLM
     except Exception as exc:
-        print(f"ERROR: failed to import vllm ({exc}). "
-              "Install with `pip install -e .[vllm]` or rerun with NO_VLLM=1.",
-              file=sys.stderr)
+        print(
+            f"ERROR: failed to import vllm ({exc}). Install with `pip install -e .[vllm]` or rerun with NO_VLLM=1.",
+            file=sys.stderr,
+        )
         return 1
 
     try:

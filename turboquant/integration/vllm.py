@@ -53,6 +53,7 @@ def get_mode() -> str:
 @dataclass
 class LayerConfig:
     """Per-layer TQ configuration."""
+
     head_dim: int
     num_kv_heads: int
     num_query_heads: int
@@ -68,6 +69,7 @@ class LayerConfig:
 @dataclass
 class LayerState:
     """Per-layer runtime state. Owns the capture engine and store."""
+
     config: LayerConfig
     store: CompressedKVStore
     engine: KVCaptureEngine
@@ -112,16 +114,13 @@ def _infer_num_query_heads(attn_module, impl) -> int:
 
 
 def _is_mla_impl(impl) -> bool:
-    return (
-        hasattr(impl, "forward_mqa")
-        and hasattr(impl, "do_kv_cache_update")
-        and not hasattr(impl, "forward")
-    )
+    return hasattr(impl, "forward_mqa") and hasattr(impl, "do_kv_cache_update") and not hasattr(impl, "forward")
 
 
 # ---------------------------------------------------------------------------
 # Patched methods — kept as thin as possible
 # ---------------------------------------------------------------------------
+
 
 def _make_patched_kv_update(orig_fn, state: LayerState, no_alloc: bool = False):
     """Intercept KV cache writes to capture into TQ store."""
@@ -179,8 +178,7 @@ def _no_alloc_prefill_attention(
     return out.squeeze(0).transpose(0, 1)
 
 
-def _make_patched_forward(orig_fn, state: LayerState, no_alloc: bool = False,
-                          capture_in_forward: bool = False):
+def _make_patched_forward(orig_fn, state: LayerState, no_alloc: bool = False, capture_in_forward: bool = False):
     """Intercept forward to optionally use TQ decode.
 
     If capture_in_forward=True, also capture K/V from forward args
@@ -189,7 +187,7 @@ def _make_patched_forward(orig_fn, state: LayerState, no_alloc: bool = False,
 
     def _capture_kv(key, value, attn_metadata):
         """Capture K/V tensors into TQ store."""
-        num_tokens = getattr(attn_metadata, 'num_actual_tokens', key.shape[0])
+        num_tokens = getattr(attn_metadata, "num_actual_tokens", key.shape[0])
         if num_tokens <= 1:
             state.engine.ingest_decode(key[:num_tokens], value[:num_tokens], num_tokens)
         else:
@@ -216,27 +214,41 @@ def _make_patched_forward(orig_fn, state: LayerState, no_alloc: bool = False,
         # Off or capture-only: always use flash
         if mode in (MODE_OFF, MODE_CAPTURE_ONLY):
             return orig_fn(
-                self_impl, layer, query, key, value, kv_cache,
-                attn_metadata, output, output_scale, output_block_scale,
+                self_impl,
+                layer,
+                query,
+                key,
+                value,
+                kv_cache,
+                attn_metadata,
+                output,
+                output_scale,
+                output_block_scale,
             )
 
         # Profiling pass or prefill: use flash
         if attn_metadata is None:
             return orig_fn(
-                self_impl, layer, query, key, value, kv_cache,
-                attn_metadata, output, output_scale, output_block_scale,
+                self_impl,
+                layer,
+                query,
+                key,
+                value,
+                kv_cache,
+                attn_metadata,
+                output,
+                output_scale,
+                output_block_scale,
             )
 
         is_prefill = attn_metadata.max_query_len > 1
         if is_prefill:
             if no_alloc:
-                result = _no_alloc_prefill_attention(
-                    state, self_impl, query, key, value, attn_metadata
-                )
+                result = _no_alloc_prefill_attention(state, self_impl, query, key, value, attn_metadata)
                 num_actual = attn_metadata.num_actual_tokens
-                result_flat = result.reshape(
-                    num_actual, state.config.num_query_heads * state.config.head_dim
-                ).to(query.dtype)
+                result_flat = result.reshape(num_actual, state.config.num_query_heads * state.config.head_dim).to(
+                    query.dtype
+                )
                 if output is not None:
                     out_slice = output[:num_actual]
                     if out_slice.dim() == 3:
@@ -248,8 +260,16 @@ def _make_patched_forward(orig_fn, state: LayerState, no_alloc: bool = False,
                     return result.to(query.dtype)
                 return result_flat
             return orig_fn(
-                self_impl, layer, query, key, value, kv_cache,
-                attn_metadata, output, output_scale, output_block_scale,
+                self_impl,
+                layer,
+                query,
+                key,
+                value,
+                kv_cache,
+                attn_metadata,
+                output,
+                output_scale,
+                output_block_scale,
             )
 
         # --- Hybrid decode ---
@@ -274,9 +294,9 @@ def _make_patched_forward(orig_fn, state: LayerState, no_alloc: bool = False,
                     scale=getattr(self_impl, "scale", None),
                 )
 
-                result_flat = result.reshape(
-                    num_actual, state.config.num_query_heads * state.config.head_dim
-                ).to(query.dtype)
+                result_flat = result.reshape(num_actual, state.config.num_query_heads * state.config.head_dim).to(
+                    query.dtype
+                )
 
                 if output is not None:
                     out_slice = output[:num_actual]
@@ -301,8 +321,16 @@ def _make_patched_forward(orig_fn, state: LayerState, no_alloc: bool = False,
                 device=query.device,
             )
         return orig_fn(
-            self_impl, layer, query, key, value, kv_cache,
-            attn_metadata, output, output_scale, output_block_scale,
+            self_impl,
+            layer,
+            query,
+            key,
+            value,
+            kv_cache,
+            attn_metadata,
+            output,
+            output_scale,
+            output_block_scale,
         )
 
     return patched
@@ -314,10 +342,7 @@ def _make_patched_mla_update(orig_fn, state: LayerState):
     def patched(self_impl, kv_c_normed, k_pe, kv_cache, slot_mapping, kv_cache_dtype, k_scale):
         orig_fn(self_impl, kv_c_normed, k_pe, kv_cache, slot_mapping, kv_cache_dtype, k_scale)
         if state._log_count < 1:
-            logger.info(
-                f"[TurboQuant] MLA update observed on layer {state.config.layer_idx}; "
-                "TQ MLA path is deferred."
-            )
+            logger.info(f"[TurboQuant] MLA update observed on layer {state.config.layer_idx}; TQ MLA path is deferred.")
             state._log_count += 1
 
     return patched
@@ -335,6 +360,7 @@ def _make_patched_mla_forward(orig_fn, state: LayerState):
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def install_hooks(
     model_runner,
@@ -404,25 +430,22 @@ def install_hooks(
             needs_forward_capture = not has_separate_kv_update
 
             if has_separate_kv_update:
-                patched_update = _make_patched_kv_update(
-                    impl.do_kv_cache_update.__func__, state, no_alloc=no_alloc
-                )
+                patched_update = _make_patched_kv_update(impl.do_kv_cache_update.__func__, state, no_alloc=no_alloc)
                 impl.do_kv_cache_update = types.MethodType(
                     lambda self, *a, _p=patched_update, **kw: _p(self, *a, **kw), impl
                 )
 
             patched_forward = _make_patched_forward(
-                impl.forward.__func__, state, no_alloc=no_alloc,
+                impl.forward.__func__,
+                state,
+                no_alloc=no_alloc,
                 capture_in_forward=needs_forward_capture,
             )
-            impl.forward = types.MethodType(
-                lambda self, *a, _p=patched_forward, **kw: _p(self, *a, **kw), impl
-            )
+            impl.forward = types.MethodType(lambda self, *a, _p=patched_forward, **kw: _p(self, *a, **kw), impl)
 
             if needs_forward_capture and layer_idx == 0:
                 logger.info(
-                    "[TurboQuant] No do_kv_cache_update found (vLLM 0.16 FlashInfer); "
-                    "capturing K/V in forward()"
+                    "[TurboQuant] No do_kv_cache_update found (vLLM 0.16 FlashInfer); capturing K/V in forward()"
                 )
         else:
             if hasattr(impl, "do_kv_cache_update"):
@@ -432,19 +455,14 @@ def install_hooks(
                 )
             if hasattr(impl, "forward_mqa"):
                 patched_fwd = _make_patched_mla_forward(impl.forward_mqa.__func__, state)
-                impl.forward_mqa = types.MethodType(
-                    lambda self, *a, _p=patched_fwd, **kw: _p(self, *a, **kw), impl
-                )
+                impl.forward_mqa = types.MethodType(lambda self, *a, _p=patched_fwd, **kw: _p(self, *a, **kw), impl)
 
         impl._tq_layer_state = state
         layer_idx += 1
 
     model_runner._tq_layer_states = layer_states
     model_runner._tq_no_alloc = no_alloc
-    logger.info(
-        f"[TurboQuant] Hooks on {len(layer_states)} layers "
-        f"(mode={mode}, no_alloc={no_alloc})"
-    )
+    logger.info(f"[TurboQuant] Hooks on {len(layer_states)} layers (mode={mode}, no_alloc={no_alloc})")
     return layer_states
 
 

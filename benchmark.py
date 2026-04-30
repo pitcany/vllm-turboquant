@@ -6,6 +6,7 @@ Tests: VRAM, throughput (tok/s), quality, context capacity.
 Usage:
     CUDA_VISIBLE_DEVICES=0,1,4,6 MODEL=Qwen3.5-27B python benchmark.py
 """
+
 import json
 import os
 import subprocess
@@ -17,12 +18,16 @@ GPUS = os.environ.get("CUDA_VISIBLE_DEVICES", "0,1,4,6")
 MODELS = {
     "Qwen2.5-7B-Instruct": {
         "path": "/mnt/llm_models/Qwen2.5-7B-Instruct",
-        "tp": 2, "gpu_mem": 0.90, "max_model_len": 32768,
+        "tp": 2,
+        "gpu_mem": 0.90,
+        "max_model_len": 32768,
         "dtype": "bfloat16",
     },
     "Qwen3.5-27B": {
         "path": "/mnt/llm_models/Qwen3.5-27B",
-        "tp": 4, "gpu_mem": 0.90, "max_model_len": 131072,
+        "tp": 4,
+        "gpu_mem": 0.90,
+        "max_model_len": 131072,
         "dtype": "bfloat16",
     },
 }
@@ -70,8 +75,8 @@ os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
 
 def main():
     from vllm import LLM, SamplingParams
-    llm = LLM(model="{m['path']}", dtype="{m['dtype']}", gpu_memory_utilization={m['gpu_mem']},
-        max_model_len={m['max_model_len']}, tensor_parallel_size={m['tp']},
+    llm = LLM(model="{m["path"]}", dtype="{m["dtype"]}", gpu_memory_utilization={m["gpu_mem"]},
+        max_model_len={m["max_model_len"]}, tensor_parallel_size={m["tp"]},
         trust_remote_code=True, max_num_seqs=1)
     cache_cfg = llm.llm_engine.vllm_config.cache_config
     blocks = cache_cfg.num_gpu_blocks
@@ -109,8 +114,8 @@ os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
 
 def main():
     from vllm import LLM, SamplingParams
-    llm = LLM(model="{m['path']}", dtype="{m['dtype']}", gpu_memory_utilization={m['gpu_mem']},
-        max_model_len={m['max_model_len']}, tensor_parallel_size={m['tp']},
+    llm = LLM(model="{m["path"]}", dtype="{m["dtype"]}", gpu_memory_utilization={m["gpu_mem"]},
+        max_model_len={m["max_model_len"]}, tensor_parallel_size={m["tp"]},
         trust_remote_code=True, max_num_seqs=1)
     cache_cfg = llm.llm_engine.vllm_config.cache_config
     blocks = cache_cfg.num_gpu_blocks
@@ -173,9 +178,9 @@ if __name__ == "__main__":
 def run_model(name, m):
     n = m["tp"]
 
-    print(f"\\n{'#'*60}")
+    print(f"\\n{'#' * 60}")
     print(f"# {name} (TP={n})")
-    print(f"{'#'*60}")
+    print(f"{'#' * 60}")
 
     print("  Baseline ...", flush=True)
     bl = run_script(f"bl_{name}", baseline_code(m))
@@ -198,17 +203,17 @@ def run_model(name, m):
 
     bl_tokens = bl["blocks"] * bs
 
-    print(f"\\n  {'='*56}")
+    print(f"\\n  {'=' * 56}")
     print("  VRAM")
     print(f"    Baseline:      {bl['vram'][:n]} MB/GPU")
     print(f"    TQ after gen:  {tq['vram_gen'][:n]} MB/GPU")
     print(f"    TQ after free: {tq['vram_freed'][:n]} MB/GPU")
-    print(f"    Freed/GPU:     {freed_per/1e6:.0f} MB")
-    print(f"    Total freed:   {freed_total/1e6:.0f} MB ({freed_total/1e9:.1f} GB)")
+    print(f"    Freed/GPU:     {freed_per / 1e6:.0f} MB")
+    print(f"    Total freed:   {freed_total / 1e6:.0f} MB ({freed_total / 1e9:.1f} GB)")
     print("  THROUGHPUT")
     print(f"    Baseline:      {bl['tps']} tok/s ({bl['toks']} tokens, {bl['elapsed']}s)")
     print(f"    TQ:            {tq['tps']} tok/s ({tq['toks']} tokens, {tq['elapsed']}s)")
-    print(f"    Ratio:         {tq['tps']/max(bl['tps'],0.1):.2f}x")
+    print(f"    Ratio:         {tq['tps'] / max(bl['tps'], 0.1):.2f}x")
     print("  CONTEXT")
     print(f"    Baseline:      {bl_tokens:,} tokens ({bl['blocks']} blocks x {bs})")
     print(f"    TQ layers:     {tq['hooks']}")
@@ -218,11 +223,17 @@ def run_model(name, m):
     print("  OUTPUT")
     print(f"    Baseline: {bl['text'][:150]}")
     print(f"    TQ:       {tq['text'][:150]}")
-    print(f"  {'='*56}")
+    print(f"  {'=' * 56}")
 
-    return {"model": name, "bl_tps": bl["tps"], "tq_tps": tq["tps"],
-            "freed_mb": round(freed_total/1e6), "hooks": tq["hooks"],
-            "bl_blocks": bl["blocks"], "bl_tokens": bl_tokens}
+    return {
+        "model": name,
+        "bl_tps": bl["tps"],
+        "tq_tps": tq["tps"],
+        "freed_mb": round(freed_total / 1e6),
+        "hooks": tq["hooks"],
+        "bl_blocks": bl["blocks"],
+        "bl_tokens": bl_tokens,
+    }
 
 
 def main():
@@ -245,12 +256,12 @@ def main():
             results.append(r)
 
     if results:
-        print(f"\\n{'='*60}")
+        print(f"\\n{'=' * 60}")
         print("SUMMARY")
         print(f"{'Model':<25} {'Hooks':>6} {'BL tok/s':>9} {'TQ tok/s':>9} {'Freed':>8}")
         for r in results:
             print(f"{r['model']:<25} {r['hooks']:>6} {r['bl_tps']:>9} {r['tq_tps']:>9} {r['freed_mb']:>6} MB")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
 
 if __name__ == "__main__":

@@ -19,8 +19,9 @@ from turboquant.quantizer import ProdQuantized, TurboQuantProd
 
 class FlatCache(NamedTuple):
     """Flattened view of compressed KV for fast read access."""
-    prod_q: ProdQuantized       # (num_kv_heads, total_tokens, ...)
-    value_q: ValueQuantized     # (num_kv_heads, total_tokens, ...)
+
+    prod_q: ProdQuantized  # (num_kv_heads, total_tokens, ...)
+    value_q: ValueQuantized  # (num_kv_heads, total_tokens, ...)
     num_tokens: int
 
 

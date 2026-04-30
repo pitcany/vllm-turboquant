@@ -50,33 +50,39 @@ import triton.language as tl
 # Then score = norms * sum_j q_rot[j] * centroid[idx[j]]
 # This avoids materializing the D-dim dequantized key vectors entirely.
 
+
 @triton.jit
 def _turboquant_mse_score_kernel(
     # Pointers
-    Q_ptr,          # (BH, D) query vectors (already rotated: q @ Pi^T)
-    MSE_ptr,        # (BH, N, packed_d) bit-packed indices
-    NORMS_ptr,      # (BH, N) original norms
+    Q_ptr,  # (BH, D) query vectors (already rotated: q @ Pi^T)
+    MSE_ptr,  # (BH, N, packed_d) bit-packed indices
+    NORMS_ptr,  # (BH, N) original norms
     CENTROIDS_ptr,  # (n_clusters,) centroid values
-    OUT_ptr,        # (BH, N) output scores
+    OUT_ptr,  # (BH, N) output scores
     # Strides
-    stride_q_bh, stride_q_d,
-    stride_m_bh, stride_m_n, stride_m_d,
-    stride_n_bh, stride_n_n,
-    stride_o_bh, stride_o_n,
+    stride_q_bh,
+    stride_q_d,
+    stride_m_bh,
+    stride_m_n,
+    stride_m_d,
+    stride_n_bh,
+    stride_n_n,
+    stride_o_bh,
+    stride_o_n,
     # Dimensions
     BH: tl.constexpr,
-    N,   # number of KV tokens (variable)
+    N,  # number of KV tokens (variable)
     D: tl.constexpr,
     PACKED_D: tl.constexpr,
     # Quantization params
-    BITS: tl.constexpr,        # MSE bits (1, 2, or 4 after rounding)
+    BITS: tl.constexpr,  # MSE bits (1, 2, or 4 after rounding)
     VALS_PER_BYTE: tl.constexpr,  # how many indices per packed byte
     # Block sizes
     BLOCK_N: tl.constexpr,
 ):
     """Compute MSE attention scores for a block of KV tokens."""
-    pid_bh = tl.program_id(0)   # batch*head index
-    pid_n = tl.program_id(1)    # KV token block index
+    pid_bh = tl.program_id(0)  # batch*head index
+    pid_n = tl.program_id(1)  # KV token block index
 
     # Bounds
     n_start = pid_n * BLOCK_N
@@ -97,8 +103,7 @@ def _turboquant_mse_score_kernel(
     for byte_idx in range(PACKED_D):
         # Load packed bytes for this block of tokens: (BLOCK_N,)
         packed = tl.load(
-            MSE_ptr + pid_bh * stride_m_bh + n_offs * stride_m_n + byte_idx * stride_m_d,
-            mask=n_mask, other=0
+            MSE_ptr + pid_bh * stride_m_bh + n_offs * stride_m_n + byte_idx * stride_m_d, mask=n_mask, other=0
         ).to(tl.int32)
 
         # Extract each index from the packed byte
@@ -116,13 +121,11 @@ def _turboquant_mse_score_kernel(
                 scores += q_val * centroid_val
 
     # Multiply by norms
-    norms = tl.load(NORMS_ptr + pid_bh * stride_n_bh + n_offs * stride_n_n,
-                     mask=n_mask, other=0.0).to(tl.float32)
+    norms = tl.load(NORMS_ptr + pid_bh * stride_n_bh + n_offs * stride_n_n, mask=n_mask, other=0.0).to(tl.float32)
     scores = scores * norms
 
     # Store
-    tl.store(OUT_ptr + pid_bh * stride_o_bh + n_offs * stride_o_n,
-             scores, mask=n_mask)
+    tl.store(OUT_ptr + pid_bh * stride_o_bh + n_offs * stride_o_n, scores, mask=n_mask)
 
 
 # ─── Kernel 2: QJL score computation ──────────────────────────────────
@@ -135,17 +138,23 @@ def _turboquant_mse_score_kernel(
 #
 # Computes: scores[b,n] = qjl_scale * res_norms[n] * sum_j q_sketched[j] * sign[n,j]
 
+
 @triton.jit
 def _turboquant_qjl_score_kernel(
-    Q_SKETCH_ptr,    # (BH, D) pre-sketched query
-    SIGNS_ptr,       # (BH, N, packed_d) packed sign bits
-    RES_NORMS_ptr,   # (BH, N) residual norms
-    OUT_ptr,         # (BH, N) output QJL scores (added to existing)
+    Q_SKETCH_ptr,  # (BH, D) pre-sketched query
+    SIGNS_ptr,  # (BH, N, packed_d) packed sign bits
+    RES_NORMS_ptr,  # (BH, N) residual norms
+    OUT_ptr,  # (BH, N) output QJL scores (added to existing)
     # Strides
-    stride_qs_bh, stride_qs_d,
-    stride_s_bh, stride_s_n, stride_s_d,
-    stride_rn_bh, stride_rn_n,
-    stride_o_bh, stride_o_n,
+    stride_qs_bh,
+    stride_qs_d,
+    stride_s_bh,
+    stride_s_n,
+    stride_s_d,
+    stride_rn_bh,
+    stride_rn_n,
+    stride_o_bh,
+    stride_o_n,
     # Dims
     N,
     D: tl.constexpr,
@@ -167,8 +176,7 @@ def _turboquant_qjl_score_kernel(
     for byte_idx in range(PACKED_D_SIGNS):
         # Load packed sign byte for this block: (BLOCK_N,)
         packed = tl.load(
-            SIGNS_ptr + pid_bh * stride_s_bh + n_offs * stride_s_n + byte_idx * stride_s_d,
-            mask=n_mask, other=0
+            SIGNS_ptr + pid_bh * stride_s_bh + n_offs * stride_s_n + byte_idx * stride_s_d, mask=n_mask, other=0
         ).to(tl.int32)
 
         # Extract 8 sign bits per byte
@@ -183,15 +191,14 @@ def _turboquant_qjl_score_kernel(
                 dot += q_val * sign_val
 
     # Scale by residual norms and QJL constant
-    res_norms = tl.load(RES_NORMS_ptr + pid_bh * stride_rn_bh + n_offs * stride_rn_n,
-                         mask=n_mask, other=0.0).to(tl.float32)
+    res_norms = tl.load(RES_NORMS_ptr + pid_bh * stride_rn_bh + n_offs * stride_rn_n, mask=n_mask, other=0.0).to(
+        tl.float32
+    )
     qjl_scores = dot * res_norms * QJL_SCALE
 
     # Add to existing MSE scores (or store fresh)
-    existing = tl.load(OUT_ptr + pid_bh * stride_o_bh + n_offs * stride_o_n,
-                        mask=n_mask, other=0.0)
-    tl.store(OUT_ptr + pid_bh * stride_o_bh + n_offs * stride_o_n,
-             existing + qjl_scores, mask=n_mask)
+    existing = tl.load(OUT_ptr + pid_bh * stride_o_bh + n_offs * stride_o_n, mask=n_mask, other=0.0)
+    tl.store(OUT_ptr + pid_bh * stride_o_bh + n_offs * stride_o_n, existing + qjl_scores, mask=n_mask)
 
 
 # ─── Kernel 3: Fused decode attention (online softmax over TQ keys + values) ──
@@ -204,33 +211,48 @@ def _turboquant_qjl_score_kernel(
 # never materialize the full FP16 KV, and produce the final output
 # in a single pass.
 
+
 @triton.jit
 def _turboquant_fused_decode_kernel(
     # Query (already rotated for MSE, and sketched for QJL)
-    Q_ROT_ptr,       # (BH, D) q @ Pi^T
-    Q_SKETCH_ptr,    # (BH, D) q @ S^T
+    Q_ROT_ptr,  # (BH, D) q @ Pi^T
+    Q_SKETCH_ptr,  # (BH, D) q @ S^T
     # Quantized keys
-    MSE_ptr,         # (BH, N, packed_d_mse) packed MSE indices
-    SIGNS_ptr,       # (BH, N, packed_d_signs) packed QJL signs
-    NORMS_ptr,       # (BH, N) key norms
-    RES_NORMS_ptr,   # (BH, N) residual norms
-    CENTROIDS_ptr,   # (n_clusters,) codebook
+    MSE_ptr,  # (BH, N, packed_d_mse) packed MSE indices
+    SIGNS_ptr,  # (BH, N, packed_d_signs) packed QJL signs
+    NORMS_ptr,  # (BH, N) key norms
+    RES_NORMS_ptr,  # (BH, N) residual norms
+    CENTROIDS_ptr,  # (n_clusters,) codebook
     # Values (group-quantized)
-    V_DATA_ptr,      # (BH, N, D) uint8 quantized values
-    V_SCALES_ptr,    # (BH, N, N_GROUPS) value scales
-    V_ZEROS_ptr,     # (BH, N, N_GROUPS) value zeros
+    V_DATA_ptr,  # (BH, N, D) uint8 quantized values
+    V_SCALES_ptr,  # (BH, N, N_GROUPS) value scales
+    V_ZEROS_ptr,  # (BH, N, N_GROUPS) value zeros
     # Output
-    OUT_ptr,         # (BH, D) output
+    OUT_ptr,  # (BH, D) output
     # Strides
-    stride_q_bh, stride_q_d,
-    stride_m_bh, stride_m_n, stride_m_d,
-    stride_s_bh, stride_s_n, stride_s_d,
-    stride_n_bh, stride_n_n,
-    stride_rn_bh, stride_rn_n,
-    stride_v_bh, stride_v_n, stride_v_d,
-    stride_vs_bh, stride_vs_n, stride_vs_g,
-    stride_vz_bh, stride_vz_n, stride_vz_g,
-    stride_o_bh, stride_o_d,
+    stride_q_bh,
+    stride_q_d,
+    stride_m_bh,
+    stride_m_n,
+    stride_m_d,
+    stride_s_bh,
+    stride_s_n,
+    stride_s_d,
+    stride_n_bh,
+    stride_n_n,
+    stride_rn_bh,
+    stride_rn_n,
+    stride_v_bh,
+    stride_v_n,
+    stride_v_d,
+    stride_vs_bh,
+    stride_vs_n,
+    stride_vs_g,
+    stride_vz_bh,
+    stride_vz_n,
+    stride_vz_g,
+    stride_o_bh,
+    stride_o_d,
     # Dims
     N,
     D: tl.constexpr,
@@ -252,8 +274,8 @@ def _turboquant_fused_decode_kernel(
 
     # Online softmax state
     m_i = tl.zeros([1], dtype=tl.float32) - float("inf")  # running max
-    l_i = tl.zeros([1], dtype=tl.float32)                   # running sum of exp
-    acc = tl.zeros([D], dtype=tl.float32)                    # running weighted sum
+    l_i = tl.zeros([1], dtype=tl.float32)  # running sum of exp
+    acc = tl.zeros([D], dtype=tl.float32)  # running weighted sum
 
     num_blocks = tl.cdiv(N, BLOCK_N)
 
@@ -268,8 +290,7 @@ def _turboquant_fused_decode_kernel(
         mse_scores = tl.zeros([BLOCK_N], dtype=tl.float32)
         for byte_idx in range(PACKED_D_MSE):
             packed = tl.load(
-                MSE_ptr + pid_bh * stride_m_bh + n_offs * stride_m_n + byte_idx * stride_m_d,
-                mask=n_mask, other=0
+                MSE_ptr + pid_bh * stride_m_bh + n_offs * stride_m_n + byte_idx * stride_m_d, mask=n_mask, other=0
             ).to(tl.int32)
             for sub in range(VALS_PER_BYTE):
                 coord_idx = byte_idx * VALS_PER_BYTE + sub
@@ -279,16 +300,16 @@ def _turboquant_fused_decode_kernel(
                     q_val = tl.load(Q_ROT_ptr + pid_bh * stride_q_bh + coord_idx * stride_q_d).to(tl.float32)
                     mse_scores += q_val * centroid_val
 
-        key_norms = tl.load(NORMS_ptr + pid_bh * stride_n_bh + n_offs * stride_n_n,
-                            mask=n_mask, other=0.0).to(tl.float32)
+        key_norms = tl.load(NORMS_ptr + pid_bh * stride_n_bh + n_offs * stride_n_n, mask=n_mask, other=0.0).to(
+            tl.float32
+        )
         mse_scores = mse_scores * key_norms
 
         # Part 2: QJL score
         qjl_dot = tl.zeros([BLOCK_N], dtype=tl.float32)
         for byte_idx in range(PACKED_D_SIGNS):
             packed = tl.load(
-                SIGNS_ptr + pid_bh * stride_s_bh + n_offs * stride_s_n + byte_idx * stride_s_d,
-                mask=n_mask, other=0
+                SIGNS_ptr + pid_bh * stride_s_bh + n_offs * stride_s_n + byte_idx * stride_s_d, mask=n_mask, other=0
             ).to(tl.int32)
             for bit in range(8):
                 coord_idx = byte_idx * 8 + bit
@@ -298,8 +319,9 @@ def _turboquant_fused_decode_kernel(
                     q_val = tl.load(Q_SKETCH_ptr + pid_bh * stride_q_bh + coord_idx * stride_q_d).to(tl.float32)
                     qjl_dot += q_val * sign_val
 
-        res_norms = tl.load(RES_NORMS_ptr + pid_bh * stride_rn_bh + n_offs * stride_rn_n,
-                            mask=n_mask, other=0.0).to(tl.float32)
+        res_norms = tl.load(RES_NORMS_ptr + pid_bh * stride_rn_bh + n_offs * stride_rn_n, mask=n_mask, other=0.0).to(
+            tl.float32
+        )
         qjl_scores = qjl_dot * res_norms * QJL_SCALE
 
         # Combined score
@@ -323,21 +345,21 @@ def _turboquant_fused_decode_kernel(
         d_offs = tl.arange(0, D)
         # Value data
         v_quant = tl.load(
-            V_DATA_ptr + pid_bh * stride_v_bh
-            + n_offs[:, None] * stride_v_n + d_offs[None, :] * stride_v_d,
-            mask=n_mask[:, None], other=0
+            V_DATA_ptr + pid_bh * stride_v_bh + n_offs[:, None] * stride_v_n + d_offs[None, :] * stride_v_d,
+            mask=n_mask[:, None],
+            other=0,
         ).to(tl.float32)
         # Value scales: group index = d_offs // GROUP_SIZE
         g_offs = d_offs // GROUP_SIZE
         v_scale = tl.load(
-            V_SCALES_ptr + pid_bh * stride_vs_bh
-            + n_offs[:, None] * stride_vs_n + g_offs[None, :] * stride_vs_g,
-            mask=n_mask[:, None], other=1.0
+            V_SCALES_ptr + pid_bh * stride_vs_bh + n_offs[:, None] * stride_vs_n + g_offs[None, :] * stride_vs_g,
+            mask=n_mask[:, None],
+            other=1.0,
         ).to(tl.float32)
         v_zero = tl.load(
-            V_ZEROS_ptr + pid_bh * stride_vz_bh
-            + n_offs[:, None] * stride_vz_n + g_offs[None, :] * stride_vz_g,
-            mask=n_mask[:, None], other=0.0
+            V_ZEROS_ptr + pid_bh * stride_vz_bh + n_offs[:, None] * stride_vz_n + g_offs[None, :] * stride_vz_g,
+            mask=n_mask[:, None],
+            other=0.0,
         ).to(tl.float32)
         # Dequantize: (BLOCK_N, D)
         v_dequant = v_quant * v_scale + v_zero
@@ -356,6 +378,7 @@ def _turboquant_fused_decode_kernel(
 
 # ─── Python wrappers ──────────────────────────────────────────────────
 
+
 def _get_packing_params(bits: int):
     """Get packing parameters matching _pack_indices logic."""
     if bits == 1:
@@ -369,10 +392,10 @@ def _get_packing_params(bits: int):
 
 
 def turboquant_mse_score(
-    query_rot: torch.Tensor,     # (BH, D) or (BH, 1, D) — q @ Pi^T
-    mse_packed: torch.Tensor,    # (BH, N, packed_d) uint8
-    norms: torch.Tensor,         # (BH, N) float
-    centroids: torch.Tensor,     # (n_clusters,) float32
+    query_rot: torch.Tensor,  # (BH, D) or (BH, 1, D) — q @ Pi^T
+    mse_packed: torch.Tensor,  # (BH, N, packed_d) uint8
+    norms: torch.Tensor,  # (BH, N) float
+    centroids: torch.Tensor,  # (n_clusters,) float32
     mse_bits: int,
 ) -> torch.Tensor:
     """
@@ -395,13 +418,26 @@ def turboquant_mse_score(
     grid = (BH, triton.cdiv(N, BLOCK_N))
 
     _turboquant_mse_score_kernel[grid](
-        query_rot, mse_packed, norms, centroids, out,
-        query_rot.stride(0), query_rot.stride(1),
-        mse_packed.stride(0), mse_packed.stride(1), mse_packed.stride(2),
-        norms.stride(0), norms.stride(1),
-        out.stride(0), out.stride(1),
-        BH=BH, N=N, D=D, PACKED_D=packed_d,
-        BITS=eff_bits, VALS_PER_BYTE=vals_per_byte,
+        query_rot,
+        mse_packed,
+        norms,
+        centroids,
+        out,
+        query_rot.stride(0),
+        query_rot.stride(1),
+        mse_packed.stride(0),
+        mse_packed.stride(1),
+        mse_packed.stride(2),
+        norms.stride(0),
+        norms.stride(1),
+        out.stride(0),
+        out.stride(1),
+        BH=BH,
+        N=N,
+        D=D,
+        PACKED_D=packed_d,
+        BITS=eff_bits,
+        VALS_PER_BYTE=vals_per_byte,
         BLOCK_N=BLOCK_N,
     )
 
@@ -409,11 +445,11 @@ def turboquant_mse_score(
 
 
 def turboquant_qjl_score(
-    q_sketched: torch.Tensor,       # (BH, D) — q @ S^T
-    qjl_signs: torch.Tensor,        # (BH, N, D//8) uint8 packed signs
-    residual_norms: torch.Tensor,   # (BH, N)
-    qjl_scale: float,               # sqrt(pi/2) / D
-    out: torch.Tensor = None,       # (BH, N) — will be ADDED to if provided
+    q_sketched: torch.Tensor,  # (BH, D) — q @ S^T
+    qjl_signs: torch.Tensor,  # (BH, N, D//8) uint8 packed signs
+    residual_norms: torch.Tensor,  # (BH, N)
+    qjl_scale: float,  # sqrt(pi/2) / D
+    out: torch.Tensor = None,  # (BH, N) — will be ADDED to if provided
 ) -> torch.Tensor:
     """
     Compute QJL attention score contribution.
@@ -435,12 +471,22 @@ def turboquant_qjl_score(
     grid = (BH, triton.cdiv(N, BLOCK_N))
 
     _turboquant_qjl_score_kernel[grid](
-        q_sketched, qjl_signs, residual_norms, out,
-        q_sketched.stride(0), q_sketched.stride(1),
-        qjl_signs.stride(0), qjl_signs.stride(1), qjl_signs.stride(2),
-        residual_norms.stride(0), residual_norms.stride(1),
-        out.stride(0), out.stride(1),
-        N=N, D=D, PACKED_D_SIGNS=packed_d_signs,
+        q_sketched,
+        qjl_signs,
+        residual_norms,
+        out,
+        q_sketched.stride(0),
+        q_sketched.stride(1),
+        qjl_signs.stride(0),
+        qjl_signs.stride(1),
+        qjl_signs.stride(2),
+        residual_norms.stride(0),
+        residual_norms.stride(1),
+        out.stride(0),
+        out.stride(1),
+        N=N,
+        D=D,
+        PACKED_D_SIGNS=packed_d_signs,
         QJL_SCALE=qjl_scale,
         BLOCK_N=BLOCK_N,
     )
@@ -449,11 +495,11 @@ def turboquant_qjl_score(
 
 
 def turboquant_attention_score(
-    query: torch.Tensor,               # (B, H, 1, D) or (BH, 1, D)
-    quantized_key,                      # ProdQuantized namedtuple
-    Pi: torch.Tensor,                   # (D, D) rotation matrix
-    S: torch.Tensor,                    # (D, D) QJL matrix
-    centroids: torch.Tensor,           # (n_clusters,) codebook
+    query: torch.Tensor,  # (B, H, 1, D) or (BH, 1, D)
+    quantized_key,  # ProdQuantized namedtuple
+    Pi: torch.Tensor,  # (D, D) rotation matrix
+    S: torch.Tensor,  # (D, D) QJL matrix
+    centroids: torch.Tensor,  # (n_clusters,) codebook
     mse_bits: int,
     qjl_scale: float,
 ) -> torch.Tensor:
@@ -474,8 +520,8 @@ def turboquant_attention_score(
         D = query.shape[-1]
 
     # Precompute rotated and sketched queries (one-time per decode step)
-    q_rot = torch.matmul(query_flat.squeeze(1).float(), Pi.T)      # (BH, D)
-    q_sketch = torch.matmul(query_flat.squeeze(1).float(), S.T)    # (BH, D)
+    q_rot = torch.matmul(query_flat.squeeze(1).float(), Pi.T)  # (BH, D)
+    q_sketch = torch.matmul(query_flat.squeeze(1).float(), S.T)  # (BH, D)
 
     # Flatten quantized key batch dims
     mse_packed = quantized_key.mse_indices
@@ -501,12 +547,12 @@ def turboquant_attention_score(
 
 
 def turboquant_fused_decode(
-    query: torch.Tensor,               # (BH, 1, D) or (BH, D)
-    quantized_key,                      # ProdQuantized
-    value_quantized,                    # ValueQuantized
-    Pi: torch.Tensor,                   # (D, D)
-    S: torch.Tensor,                    # (D, D)
-    centroids: torch.Tensor,           # (n_clusters,)
+    query: torch.Tensor,  # (BH, 1, D) or (BH, D)
+    quantized_key,  # ProdQuantized
+    value_quantized,  # ValueQuantized
+    Pi: torch.Tensor,  # (D, D)
+    S: torch.Tensor,  # (D, D)
+    centroids: torch.Tensor,  # (n_clusters,)
     mse_bits: int,
     qjl_scale: float,
     sm_scale: float,
@@ -550,10 +596,12 @@ def turboquant_fused_decode(
     v_bits = value_quantized.bits if len(value_quantized) > 3 else 2
     if v_bits == 2 and v_data.shape[-1] != D:
         from turboquant.kv_cache import unpack_values
+
         v_data = unpack_values(value_quantized)
         # v_data is now (..., N, D) uint8
     elif v_bits == 4 and v_data.shape[-1] != D:
         from turboquant.kv_cache import unpack_values
+
         v_data = unpack_values(value_quantized)
 
     if v_data.dim() > 3:
@@ -571,32 +619,59 @@ def turboquant_fused_decode(
     grid = (BH,)
 
     _turboquant_fused_decode_kernel[grid](
-        q_rot, q_sketch,
-        mse_packed, qjl_signs, norms, res_norms, centroids,
-        v_data, v_scales, v_zeros,
+        q_rot,
+        q_sketch,
+        mse_packed,
+        qjl_signs,
+        norms,
+        res_norms,
+        centroids,
+        v_data,
+        v_scales,
+        v_zeros,
         out,
         # Q strides
-        q_rot.stride(0), q_rot.stride(1),
+        q_rot.stride(0),
+        q_rot.stride(1),
         # MSE strides
-        mse_packed.stride(0), mse_packed.stride(1), mse_packed.stride(2),
+        mse_packed.stride(0),
+        mse_packed.stride(1),
+        mse_packed.stride(2),
         # Signs strides
-        qjl_signs.stride(0), qjl_signs.stride(1), qjl_signs.stride(2),
+        qjl_signs.stride(0),
+        qjl_signs.stride(1),
+        qjl_signs.stride(2),
         # Norms strides
-        norms.stride(0), norms.stride(1),
+        norms.stride(0),
+        norms.stride(1),
         # Res norms strides
-        res_norms.stride(0), res_norms.stride(1),
+        res_norms.stride(0),
+        res_norms.stride(1),
         # Value strides
-        v_data.stride(0), v_data.stride(1), v_data.stride(2),
-        v_scales.stride(0), v_scales.stride(1), v_scales.stride(2),
-        v_zeros.stride(0), v_zeros.stride(1), v_zeros.stride(2),
+        v_data.stride(0),
+        v_data.stride(1),
+        v_data.stride(2),
+        v_scales.stride(0),
+        v_scales.stride(1),
+        v_scales.stride(2),
+        v_zeros.stride(0),
+        v_zeros.stride(1),
+        v_zeros.stride(2),
         # Out strides
-        out.stride(0), out.stride(1),
+        out.stride(0),
+        out.stride(1),
         # Dims
-        N=N, D=D, PACKED_D_MSE=packed_d_mse, PACKED_D_SIGNS=packed_d_signs,
-        N_GROUPS=N_GROUPS, GROUP_SIZE=group_size,
+        N=N,
+        D=D,
+        PACKED_D_MSE=packed_d_mse,
+        PACKED_D_SIGNS=packed_d_signs,
+        N_GROUPS=N_GROUPS,
+        GROUP_SIZE=group_size,
         # Quant params
-        BITS=eff_bits, VALS_PER_BYTE=vals_per_byte,
-        QJL_SCALE=qjl_scale, SM_SCALE=sm_scale,
+        BITS=eff_bits,
+        VALS_PER_BYTE=vals_per_byte,
+        QJL_SCALE=qjl_scale,
+        SM_SCALE=sm_scale,
         # Block
         BLOCK_N=BLOCK_N,
         num_warps=4,

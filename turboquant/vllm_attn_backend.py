@@ -166,9 +166,7 @@ def enable_no_alloc(
         orig_layout_update = GPUModelRunner._update_hybrid_attention_mamba_layout
 
         def patched_layout_update(self, kv_caches):
-            for layer_name, target_layer_name in getattr(
-                self, "shared_kv_cache_layers", {}
-            ).items():
+            for layer_name, target_layer_name in getattr(self, "shared_kv_cache_layers", {}).items():
                 if layer_name not in kv_caches and target_layer_name in kv_caches:
                     kv_caches[layer_name] = kv_caches[target_layer_name]
             return orig_layout_update(self, kv_caches)
@@ -197,6 +195,7 @@ def enable_no_alloc(
                     MODE_ACTIVE,
                     install_turboquant_hooks,
                 )
+
                 tq_states = install_turboquant_hooks(
                     worker.model_runner,
                     key_bits=cfg["key_bits"],
@@ -207,11 +206,7 @@ def enable_no_alloc(
                     no_alloc=True,
                 )
             static_ctx = worker.model_runner.compilation_config.static_forward_context
-            flash_layers = [
-                name
-                for name, state in tq_states.items()
-                if getattr(state, "supports_hybrid", False)
-            ]
+            flash_layers = [name for name, state in tq_states.items() if getattr(state, "supports_hybrid", False)]
             shared_layers = 0
             if len(flash_layers) > 1:
                 target = flash_layers[0]
@@ -264,6 +259,7 @@ def enable_no_alloc(
                             MODE_ACCUMULATE,
                             install_turboquant_hooks,
                         )
+
                         tq = install_turboquant_hooks(
                             self_worker.model_runner,
                             key_bits=cfg["key_bits"],

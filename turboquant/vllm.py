@@ -94,8 +94,7 @@ def _resolve_executor(llm: Any) -> Any:
     engine = getattr(llm, "llm_engine", None)
     if engine is None:
         raise TurboQuantVLLMError(
-            "llm.llm_engine not found; pass a vllm.LLM instance "
-            "(synchronous engine). AsyncEngine is not yet supported."
+            "llm.llm_engine not found; pass a vllm.LLM instance (synchronous engine). AsyncEngine is not yet supported."
         )
 
     candidates = []
@@ -116,9 +115,7 @@ def _resolve_executor(llm: Any) -> Any:
         inner = getattr(core, "engine_core", core)
         deep_executor = getattr(inner, "model_executor", None)
         if deep_executor is not None and hasattr(deep_executor, "collective_rpc"):
-            candidates.append(
-                ("llm.llm_engine.engine_core.engine_core.model_executor", deep_executor)
-            )
+            candidates.append(("llm.llm_engine.engine_core.engine_core.model_executor", deep_executor))
 
     if not candidates:
         raise TurboQuantVLLMError(
@@ -130,13 +127,11 @@ def _resolve_executor(llm: Any) -> Any:
         )
 
     name, executor = candidates[0]
-    logger.debug("[TurboQuant] resolved RPC handle via %s (%s)",
-                 name, type(executor).__name__)
+    logger.debug("[TurboQuant] resolved RPC handle via %s (%s)", name, type(executor).__name__)
 
     if not hasattr(executor, "collective_rpc"):
         raise TurboQuantVLLMError(
-            "executor.collective_rpc is missing; this build of vLLM does not "
-            "expose the worker RPC TurboQuant needs."
+            "executor.collective_rpc is missing; this build of vLLM does not expose the worker RPC TurboQuant needs."
         )
     return executor
 
@@ -150,8 +145,7 @@ def _check_vllm_version() -> Optional[str]:
     # Soft check; setup.py is the source of truth for hard pins.
     if not version.startswith(("0.17", "0.18")):
         logger.warning(
-            "[TurboQuant] vLLM %s has not been validated; expect breakage. "
-            "Tested range: 0.17.x / 0.18.x.",
+            "[TurboQuant] vLLM %s has not been validated; expect breakage. Tested range: 0.17.x / 0.18.x.",
             version,
         )
     return version
@@ -203,13 +197,10 @@ def enable_turboquant(
     ``vllm_version``.
     """
     if mode not in _USER_MODE_TO_INTERNAL:
-        raise ValueError(
-            f"Unknown TurboQuant mode {mode!r}; valid: {VALID_MODES}"
-        )
+        raise ValueError(f"Unknown TurboQuant mode {mode!r}; valid: {VALID_MODES}")
     internal_mode = _USER_MODE_TO_INTERNAL[mode]
 
-    if not allow_insecure_serialization and \
-            not os.environ.get("VLLM_ALLOW_INSECURE_SERIALIZATION"):
+    if not allow_insecure_serialization and not os.environ.get("VLLM_ALLOW_INSECURE_SERIALIZATION"):
         raise TurboQuantVLLMError(
             "VLLM_ALLOW_INSECURE_SERIALIZATION is not set, but "
             "allow_insecure_serialization=False was passed. vLLM v1 "
@@ -244,9 +235,7 @@ def enable_turboquant(
     try:
         hooks_per_worker = executor.collective_rpc(_install)
     except Exception as exc:  # surface a useful error to the caller
-        raise TurboQuantVLLMError(
-            f"collective_rpc(install_hooks) failed: {exc}"
-        ) from exc
+        raise TurboQuantVLLMError(f"collective_rpc(install_hooks) failed: {exc}") from exc
 
     info = {
         "workers": len(hooks_per_worker),
@@ -274,12 +263,12 @@ def free_kv_cache(llm: Any) -> int:
 
     def _free(worker):
         from turboquant.integration.vllm import free_kv_cache as _impl
+
         return _impl(worker.model_runner)
 
     freed_per_worker = executor.collective_rpc(_free)
     total = sum(int(b) for b in freed_per_worker if b is not None)
-    logger.info("[TurboQuant] freed %d bytes across %d workers",
-                total, len(freed_per_worker))
+    logger.info("[TurboQuant] freed %d bytes across %d workers", total, len(freed_per_worker))
     return total
 
 
@@ -289,6 +278,7 @@ def get_stats(llm: Any) -> list[dict]:
 
     def _stats(worker):
         from turboquant.integration.vllm import get_stats as _impl
+
         return _impl(worker.model_runner)
 
     return list(executor.collective_rpc(_stats))
@@ -303,9 +293,11 @@ def reset(llm: Any) -> None:
     executor = _resolve_executor(llm)
 
     def _reset(worker):
-        states = getattr(worker.model_runner, "_tq_layer_states", None) \
-            or getattr(worker.model_runner, "_tq_states", None) \
+        states = (
+            getattr(worker.model_runner, "_tq_layer_states", None)
+            or getattr(worker.model_runner, "_tq_states", None)
             or {}
+        )
         for s in states.values():
             s.reset()
         return len(states)

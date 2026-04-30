@@ -21,10 +21,11 @@ from turboquant.quantizer import ProdQuantized, TurboQuantProd
 
 class ValueQuantized(NamedTuple):
     """Quantized value cache (bit-packed)."""
-    data: torch.Tensor       # (..., n_tokens, packed_d) bit-packed quantized values
-    scales: torch.Tensor     # (..., n_tokens, n_groups) scale per group
-    zeros: torch.Tensor      # (..., n_tokens, n_groups) zero point per group
-    bits: int = 2            # quantization bits (for unpacking)
+
+    data: torch.Tensor  # (..., n_tokens, packed_d) bit-packed quantized values
+    scales: torch.Tensor  # (..., n_tokens, n_groups) scale per group
+    zeros: torch.Tensor  # (..., n_tokens, n_groups) zero point per group
+    bits: int = 2  # quantization bits (for unpacking)
 
 
 def unpack_values(vq: ValueQuantized) -> torch.Tensor:
@@ -202,9 +203,7 @@ class TurboQuantKVCache:
         self.key_quantized = self.key_quantizer.quantize(keys_to_quant)
 
         # Quantize values with group quantization
-        self.value_quantized = quantize_values(
-            values_to_quant, bits=self.value_bits, group_size=self.value_group_size
-        )
+        self.value_quantized = quantize_values(values_to_quant, bits=self.value_bits, group_size=self.value_group_size)
 
     def append(self, key: torch.Tensor, value: torch.Tensor):
         """
@@ -241,9 +240,7 @@ class TurboQuantKVCache:
         new_key_q = self.key_quantizer.quantize(keys_flush)
 
         # Quantize flushed values
-        new_val_q = quantize_values(
-            values_flush, bits=self.value_bits, group_size=self.value_group_size
-        )
+        new_val_q = quantize_values(values_flush, bits=self.value_bits, group_size=self.value_group_size)
 
         if self.key_quantized is None:
             self.key_quantized = new_key_q
@@ -308,7 +305,7 @@ class TurboQuantKVCache:
         # Quantized values
         if self.value_quantized is not None:
             n_quant = self.value_quantized.data.shape[-2]
-            w_quant = attn_weights[..., col_offset:col_offset + n_quant]
+            w_quant = attn_weights[..., col_offset : col_offset + n_quant]
             v_dequant = dequantize_values(self.value_quantized, self.value_group_size)
             output_parts.append(torch.matmul(w_quant, v_dequant))
             col_offset += n_quant
@@ -316,7 +313,7 @@ class TurboQuantKVCache:
         # Buffer values (full precision)
         if self.value_buffer is not None:
             n_buf = self.value_buffer.shape[-2]
-            w_buf = attn_weights[..., col_offset:col_offset + n_buf]
+            w_buf = attn_weights[..., col_offset : col_offset + n_buf]
             output_parts.append(torch.matmul(w_buf, self.value_buffer))
 
         return sum(output_parts)

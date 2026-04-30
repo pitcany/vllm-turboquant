@@ -66,8 +66,11 @@ def test_resolve_executor_prefers_top_level_collective_rpc() -> None:
                 class _Exec:
                     def collective_rpc(self, fn):
                         raise AssertionError("deep path should not be picked")
+
                 model_executor = _Exec()
+
             engine_core = _Inner2()
+
         engine_core = _Inner()
 
     class FakeLLM:
