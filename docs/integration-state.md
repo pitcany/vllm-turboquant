@@ -136,6 +136,159 @@ structurally blocked by torch's dispatcher invariants, not by anything
 specific to vLLM 0.17.1. Falling back to S1.2 (1A — forward pre-hooks
 on the `Attention` `nn.Module` via `register_forward_pre_hook`).
 
+### S1.2 — `register_forward_pre_hook` fires zero times after compilation
+
+S1.2's 1A approach was probed empirically (commit pending) by
+adding a temporary `attn_module.register_forward_pre_hook(_pre_hook)` in
+[`turboquant/integration/vllm.py`](../turboquant/integration/vllm.py)'s
+`install_hooks` (gated on `TURBOQUANT_PROBE_PRE_HOOK=1`), where
+`attn_module` is the same vLLM `Attention` `nn.Module` whose `.impl` we
+already monkey-patch. The probe was run on the cleanest S1 workload —
+**default compile + `enable_prefix_caching=False`** — so that any
+non-firing of the pre-hook isn't confounded by F2.
+
+**Result.** The pre-hook fires **0 times** for the entire 226-prefill +
+64-decode workload
+([`docs/traces/s1_probe_pre_hook.log`](traces/s1_probe_pre_hook.log)
+line counts):
+
+```text
+$ grep -c 'pre_hook fired' s1_probe_pre_hook.log
+0
+$ grep -c 'kv_update slot_mapping' s1_probe_pre_hook.log
+24
+```
+
+The 24 `kv_update slot_mapping=226` lines (`s1_probe_pre_hook.log:80–126`)
+prove the existing `impl.do_kv_cache_update` monkey-patch *does* still
+fire during prefill, even under default compile — so the pre-hook's zero
+count isn't because no attention is happening; it's because the
+`nn.Module`-level hook iteration is being skipped entirely.
+
+**Why pre-hooks don't fire.** vLLM's `compilation_config.mode =
+VLLM_COMPILE` traces each `Attention.forward` via
+`torch._dynamo.optimize` at model-load time. Dynamo inlines the `forward`
+body into the captured graph; the compiled graph then calls `forward`
+directly rather than going back through `nn.Module.__call__` (which is
+where `_forward_pre_hooks` is iterated). Any pre-hook registered *after*
+compilation — and `enable_turboquant` is necessarily after-compilation —
+is held in the module's hook list but never read. This is a documented
+behavior of the inductor frontend, not a vLLM-specific bug.
+
+**Implication for the plan.** The S1.2 / 1A approach as written is not
+viable on a model that vLLM has already compiled. Re-registering hooks
+*before* compilation would require landing TQ as a vLLM plugin (executed
+during `LLM.__init__`), which is a much larger architectural change than
+S1.2 contemplates and crosses into the §5 stop-loss territory ("the
+integration approach itself may be wrong").
+
+---
+
+## F1bis — F1 is overstated; default compile + no-prefix-cache *does* capture the prefill
+
+The same probe trace incidentally settles a different question: **what
+does default compile actually look like once F2 is removed as a confound?**
+
+The original `s0_compiled.log` ran with `enable_prefix_caching=True` (the
+vLLM default). That entangles two effects:
+- F1 — torch.compile's CUDA-graph replay bypassing per-token decode
+  hooks.
+- F2 — prefix caching reusing pass-1 KV blocks, leaving only 2 unseen
+  prefill tokens for `do_kv_cache_update` to even see.
+
+`s1_probe_pre_hook.log` keeps everything else at default compile but sets
+`enable_prefix_caching=False`. The result:
+
+| Metric | `s0_compiled.log` (prefix=ON) | `s1_probe_pre_hook.log` (prefix=OFF) |
+|---|---:|---:|
+| `kv_update` trace lines | 24 (all `slot_mapping=2`) | 24 (all `slot_mapping=226`) |
+| `forward` trace lines | 24 (all `prefill_passthrough`) | 24 (all `prefill_passthrough`) |
+| `total_compressed_tokens` (final) | **0** ([`s0_compiled.log:134`](traces/s0_compiled.log)) | **210** ([`s1_probe_pre_hook.log:132`](traces/s1_probe_pre_hook.log)) |
+| `total_buffered_tokens` (final) | 2 | 16 |
+| Captured = prompt size? | No (0/226) | **Yes** (210 + 16 = 226) |
+| `same output text` | False ([`s0_compiled.log:140`](traces/s0_compiled.log)) | **True** ([`s1_probe_pre_hook.log:138`](traces/s1_probe_pre_hook.log)) |
+| Decode tok/s | 638.0 | 305.0 |
+
+So under default compile **without prefix caching**:
+
+- The full 226-token prefill *is* captured into the TQ store on a single
+  PIECEWISE-mode call (`slot_mapping=226`) per layer. This invalidates
+  F1's "after that the compiled op takes over" reading: prefill is
+  always on the PIECEWISE path (it doesn't match the captured
+  CUDA-graph batch sizes [1, 2]) and runs the patched
+  `do_kv_cache_update` exactly as in eager mode.
+- Decode bypass is real but *invisible to correctness*: the 64
+  decode-step `forward` hook never fires (FULL CUDAGraph replay), so
+  vLLM's compiled flash-attention path runs unmodified, so output
+  matches the baseline byte-for-byte. The TQ store does not grow during
+  decode, but that doesn't show up as a wrong answer because the
+  hybrid-compressed branch is never *entered*.
+- The "1.42× speedup" reported in the original
+  `s0_compiled.log` is gone (305 vs. 638 tok/s = 0.48× ratio). The
+  speedup was an artefact of the prefix cache serving 224/226 prefill
+  tokens; once prefill is doing real work and TQ is ingesting it,
+  capture overhead dominates the 64-decode workload. This is consistent
+  with the 0.40–0.45× ratios already observed under eager mode for the
+  same reason (`compute_hybrid_attention` overhead on the
+  hybrid-compressed branch — except here the hybrid branch isn't even
+  taken; the cost is purely the per-prefill `ingest_prefill` quantize
+  pass).
+
+**Refined statement of F1.** The decode-time hook bypass is a property
+of vLLM's **FULL CUDAGraph mode** specifically, not of the Python op
+`vllm::unified_kv_cache_update`:
+
+```text
+vllm/compilation/cuda_graph.py:208–323  (CUDAGraphWrapper.__call__)
+
+  if entry.cudagraph is None:                  # capture path
+      with torch.cuda.graph(cudagraph, ...):
+          output = self.runnable(*args, **kwargs)   # Python runs ONCE
+      entry.cudagraph = cudagraph
+      ...
+  ...
+  entry.cudagraph.replay()                     # all later calls
+  return entry.output
+```
+
+Once `entry.cudagraph` is populated for a (mode, batch_descriptor)
+key, every subsequent matching call is a `cudagraph.replay()` — pure
+CUDA-stream replay, no Python. The kernels recorded inside the graph
+(`reshape_and_cache_flash`, `flash_attn_varlen`, etc.) execute, so the
+*paged* `kv_cache` tensor still gets new K/V written every decode step,
+but no Python instrumentation between those kernel launches survives.
+This is why **only** decode (which matches batch=1, mode=FULL per
+[`s0_compiled.log:41`](traces/s0_compiled.log)) is bypassed: prefill
+runs PIECEWISE (per [`s0_compiled.log:40`](traces/s0_compiled.log)) and
+the splitting-op boundaries between piecewise chunks are normal Python
+calls, where our patches fire.
+
+**Implication for the plan.** §3 / Sprint 1 was written as if the bypass
+were op-specific — that overriding the Python implementation of
+`vllm::unified_kv_cache_update` would route per-decode-step writes through
+TQ. The actual mechanism (CUDA-graph replay) routes around any Python
+hook by construction:
+
+- 1B (torch.library override) — blocked structurally as documented above,
+  *and* would not have helped: a Python-level override still wouldn't
+  execute under graph replay.
+- 1A (forward pre-hooks) — empirically blocked: zero firings, even
+  during prefill. (Different cause: dynamo inlining `forward` into the
+  compiled graph.)
+- 1C (paged-cache reader) — the only path that survives FULL CUDAGraph,
+  because it doesn't try to instrument anything inside the captured
+  region. Read the paged `kv_cache` tensor each step from a Python
+  entry point that *does* run every step (e.g., immediately after
+  `model_runner.execute_model()` returns, on the worker), and migrate
+  the per-step delta into TQ's store.
+
+**Stop point.** Per `docs/plan-path-b.md` §3 / Sprint 1's stop-condition
+("Anything in `s1_compiled.log` contradicts the entry condition (e.g.,
+the bypass turns out *not* to be the `unified_kv_cache_update` op) →
+stop, write what you saw into `docs/integration-state.md`, and ask
+before changing the plan"), this section is the "what I saw"; the plan
+needs an editing pass before code changes resume.
+
 ---
 
 ## F2 — Prefix caching evades capture even in eager mode

@@ -1,0 +1,140 @@
+Model: Qwen/Qwen2.5-0.5B-Instruct
+TP=1  max_model_len=4096  gpu_mem=0.85  mode=hybrid  buffer_size=16  prompt=long  max_tokens=64
+
+INFO 04-29 22:22:04 [utils.py:238] non-default args: {'trust_remote_code': True, 'max_model_len': 4096, 'enable_prefix_caching': False, 'gpu_memory_utilization': 0.85, 'max_num_seqs': 1, 'disable_log_stats': True, 'model': 'Qwen/Qwen2.5-0.5B-Instruct'}
+The argument `trust_remote_code` is to be used with Auto classes. It has no effect here and is ignored.
+The argument `trust_remote_code` is to be used with Auto classes. It has no effect here and is ignored.
+INFO 04-29 22:22:05 [model.py:531] Resolved architecture: Qwen2ForCausalLM
+INFO 04-29 22:22:05 [model.py:1554] Using max model len 4096
+INFO 04-29 22:22:05 [scheduler.py:231] Chunked prefill is enabled with max_num_batched_tokens=4096.
+INFO 04-29 22:22:05 [vllm.py:747] Asynchronous scheduling is enabled.
+WARNING 04-29 22:22:07 [serial_utils.py:57] Allowing insecure serialization using pickle due to VLLM_ALLOW_INSECURE_SERIALIZATION=1
+(EngineCore_DP0 pid=112491) INFO 04-29 22:22:07 [core.py:101] Initializing a V1 LLM engine (v0.17.1) with config: model='Qwen/Qwen2.5-0.5B-Instruct', speculative_config=None, tokenizer='Qwen/Qwen2.5-0.5B-Instruct', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=True, dtype=torch.bfloat16, max_seq_len=4096, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, disable_custom_all_reduce=False, quantization=None, enforce_eager=False, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_fallback=False, disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False), seed=0, served_model_name=Qwen/Qwen2.5-0.5B-Instruct, enable_prefix_caching=False, enable_chunked_prefill=True, pooler_config=None, compilation_config={'level': None, 'mode': <CompilationMode.VLLM_COMPILE: 3>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['none'], 'splitting_ops': ['vllm::unified_attention', 'vllm::unified_attention_with_output', 'vllm::unified_mla_attention', 'vllm::unified_mla_attention_with_output', 'vllm::mamba_mixer2', 'vllm::mamba_mixer', 'vllm::short_conv', 'vllm::linear_attention', 'vllm::plamo2_mamba_mixer', 'vllm::gdn_attention_core', 'vllm::kda_attention', 'vllm::sparse_attn_indexer', 'vllm::rocm_aiter_sparse_attn_indexer', 'vllm::unified_kv_cache_update', 'vllm::unified_mla_kv_cache_update'], 'compile_mm_encoder': False, 'compile_sizes': [], 'compile_ranges_split_points': [4096], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.FULL_AND_PIECEWISE: (2, 1)>, 'cudagraph_num_of_warmups': 1, 'cudagraph_capture_sizes': [1, 2], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': False, 'fuse_act_quant': False, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False}, 'max_cudagraph_capture_size': 2, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': True, 'static_all_moe_layers': []}
+(EngineCore_DP0 pid=112491) INFO 04-29 22:22:07 [parallel_state.py:1393] world_size=1 rank=0 local_rank=0 distributed_init_method=tcp://10.0.0.80:46587 backend=nccl
+(EngineCore_DP0 pid=112491) INFO 04-29 22:22:07 [parallel_state.py:1715] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, EP rank N/A, EPLB rank N/A
+(EngineCore_DP0 pid=112491) INFO 04-29 22:22:07 [base.py:106] Offloader set to NoopOffloader
+(EngineCore_DP0 pid=112491) INFO 04-29 22:22:07 [gpu_model_runner.py:4281] Starting to load model Qwen/Qwen2.5-0.5B-Instruct...
+(EngineCore_DP0 pid=112491) INFO 04-29 22:22:08 [cuda.py:405] Using FLASH_ATTN attention backend out of potential backends: ['FLASH_ATTN', 'FLASHINFER', 'TRITON_ATTN', 'FLEX_ATTENTION'].
+(EngineCore_DP0 pid=112491) INFO 04-29 22:22:08 [flash_attn.py:587] Using FlashAttention version 2
+(EngineCore_DP0 pid=112491) <frozen importlib._bootstrap_external>:1301: FutureWarning: The cuda.cudart module is deprecated and will be removed in a future release, please switch to use the cuda.bindings.runtime module instead.
+(EngineCore_DP0 pid=112491) <frozen importlib._bootstrap_external>:1301: FutureWarning: The cuda.nvrtc module is deprecated and will be removed in a future release, please switch to use the cuda.bindings.nvrtc module instead.
+(EngineCore_DP0 pid=112491) INFO 04-29 22:22:08 [weight_utils.py:601] No model.safetensors.index.json found in remote.
+(EngineCore_DP0 pid=112491) Loading safetensors checkpoint shards:   0% Completed | 0/1 [00:00<?, ?it/s]
+(EngineCore_DP0 pid=112491) Loading safetensors checkpoint shards: 100% Completed | 1/1 [00:00<00:00,  2.96it/s]
+(EngineCore_DP0 pid=112491) Loading safetensors checkpoint shards: 100% Completed | 1/1 [00:00<00:00,  2.96it/s]
+(EngineCore_DP0 pid=112491) 
+(EngineCore_DP0 pid=112491) INFO 04-29 22:22:09 [default_loader.py:293] Loading weights took 0.37 seconds
+(EngineCore_DP0 pid=112491) INFO 04-29 22:22:09 [gpu_model_runner.py:4364] Model loading took 0.93 GiB memory and 1.214873 seconds
+(EngineCore_DP0 pid=112491) INFO 04-29 22:22:10 [decorators.py:465] Directly load AOT compilation from path /home/yannik/.cache/vllm/torch_compile_cache/torch_aot_compile/873c2203490afe22256675904e743ddcb0972154ff70fcc3c602158a476d36dc/rank_0_0/model
+(EngineCore_DP0 pid=112491) INFO 04-29 22:22:10 [backends.py:916] Using cache directory: /home/yannik/.cache/vllm/torch_compile_cache/494e8162c5/rank_0_0/backbone for vLLM's torch.compile
+(EngineCore_DP0 pid=112491) INFO 04-29 22:22:10 [backends.py:976] Dynamo bytecode transform time: 0.92 s
+(EngineCore_DP0 pid=112491) INFO 04-29 22:22:11 [backends.py:266] Directly load the compiled graph(s) for compile range (1, 4096) from the cache, took 0.491 s
+(EngineCore_DP0 pid=112491) INFO 04-29 22:22:11 [monitor.py:35] torch.compile takes 1.53 s in total
+(EngineCore_DP0 pid=112491) INFO 04-29 22:22:12 [gpu_worker.py:424] Available KV cache memory: 25.51 GiB
+(EngineCore_DP0 pid=112491) INFO 04-29 22:22:12 [kv_cache_utils.py:1314] GPU KV cache size: 2,228,752 tokens
+(EngineCore_DP0 pid=112491) INFO 04-29 22:22:12 [kv_cache_utils.py:1319] Maximum concurrency for 4,096 tokens per request: 544.13x
+(EngineCore_DP0 pid=112491) 2026-04-29 22:22:12,117 - INFO - autotuner.py:256 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+(EngineCore_DP0 pid=112491) 2026-04-29 22:22:12,135 - INFO - autotuner.py:262 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(EngineCore_DP0 pid=112491) Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):   0%|          | 0/2 [00:00<?, ?it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE): 100%|██████████| 2/2 [00:00<00:00, 54.72it/s]
+(EngineCore_DP0 pid=112491) Capturing CUDA graphs (decode, FULL):   0%|          | 0/1 [00:00<?, ?it/s]Capturing CUDA graphs (decode, FULL): 100%|██████████| 1/1 [00:00<00:00, 12.47it/s]
+(EngineCore_DP0 pid=112491) INFO 04-29 22:22:12 [gpu_model_runner.py:5386] Graph capturing finished in 1 secs, took -0.13 GiB
+(EngineCore_DP0 pid=112491) INFO 04-29 22:22:12 [core.py:282] init engine (profile, create kv cache, warmup model) took 3.05 seconds
+INFO 04-29 22:22:13 [llm.py:388] Supported tasks: ('generate',)
+>>> Pass 1/2: baseline vLLM
+Rendering prompts:   0%|          | 0/1 [00:00<?, ?it/s]Rendering prompts: 100%|██████████| 1/1 [00:00<00:00, 101.60it/s]
+Processed prompts:   0%|          | 0/1 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s]Processed prompts: 100%|██████████| 1/1 [00:00<00:00,  7.27it/s, est. speed input: 1642.70 toks/s, output: 465.13 toks/s]Processed prompts: 100%|██████████| 1/1 [00:00<00:00,  7.27it/s, est. speed input: 1642.70 toks/s, output: 465.13 toks/s]Processed prompts: 100%|██████████| 1/1 [00:00<00:00,  7.26it/s, est. speed input: 1642.70 toks/s, output: 465.13 toks/s]
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=0 install name='model.layers.0.self_attn.attn' backend=flash head_dim=64 num_kv_heads=2
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=1 install name='model.layers.1.self_attn.attn' backend=flash head_dim=64 num_kv_heads=2
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=2 install name='model.layers.2.self_attn.attn' backend=flash head_dim=64 num_kv_heads=2
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=3 install name='model.layers.3.self_attn.attn' backend=flash head_dim=64 num_kv_heads=2
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=4 install name='model.layers.4.self_attn.attn' backend=flash head_dim=64 num_kv_heads=2
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=5 install name='model.layers.5.self_attn.attn' backend=flash head_dim=64 num_kv_heads=2
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=6 install name='model.layers.6.self_attn.attn' backend=flash head_dim=64 num_kv_heads=2
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=7 install name='model.layers.7.self_attn.attn' backend=flash head_dim=64 num_kv_heads=2
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=8 install name='model.layers.8.self_attn.attn' backend=flash head_dim=64 num_kv_heads=2
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=9 install name='model.layers.9.self_attn.attn' backend=flash head_dim=64 num_kv_heads=2
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=10 install name='model.layers.10.self_attn.attn' backend=flash head_dim=64 num_kv_heads=2
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=11 install name='model.layers.11.self_attn.attn' backend=flash head_dim=64 num_kv_heads=2
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=12 install name='model.layers.12.self_attn.attn' backend=flash head_dim=64 num_kv_heads=2
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=13 install name='model.layers.13.self_attn.attn' backend=flash head_dim=64 num_kv_heads=2
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=14 install name='model.layers.14.self_attn.attn' backend=flash head_dim=64 num_kv_heads=2
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=15 install name='model.layers.15.self_attn.attn' backend=flash head_dim=64 num_kv_heads=2
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=16 install name='model.layers.16.self_attn.attn' backend=flash head_dim=64 num_kv_heads=2
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=17 install name='model.layers.17.self_attn.attn' backend=flash head_dim=64 num_kv_heads=2
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=18 install name='model.layers.18.self_attn.attn' backend=flash head_dim=64 num_kv_heads=2
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=19 install name='model.layers.19.self_attn.attn' backend=flash head_dim=64 num_kv_heads=2
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=20 install name='model.layers.20.self_attn.attn' backend=flash head_dim=64 num_kv_heads=2
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=21 install name='model.layers.21.self_attn.attn' backend=flash head_dim=64 num_kv_heads=2
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=22 install name='model.layers.22.self_attn.attn' backend=flash head_dim=64 num_kv_heads=2
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=23 install name='model.layers.23.self_attn.attn' backend=flash head_dim=64 num_kv_heads=2
+(EngineCore_DP0 pid=112491) [2026-04-29 22:22:13] INFO vllm.py:552: [TurboQuant] Hooks on 24 layers (mode=hybrid, no_alloc=False)
+[2026-04-29 22:22:13] INFO vllm.py:264: [TurboQuant] enabled: {'workers': 1, 'hooks_per_worker': [24], 'mode': 'hybrid', 'vllm_version': '0.17.1'}
+[baseline] 64 tok in 0.15s  (430.6 tok/s)
+[baseline] >>> Use concrete numbers and examples where possible. Avoid vague statements. Use a logical flow. Use a clear distinction between what is observed and what is specu…
+
+>>> Installing TurboQuant hooks (mode=hybrid, buffer_size=16)
+  installed: {'workers': 1, 'hooks_per_worker': [24], 'mode': 'hybrid', 'vllm_version': '0.17.1'}
+
+>>> Pass 2/2: TurboQuant hybrid
+Rendering prompts:   0%|          | 0/1 [00:00<?, ?it/s]Rendering prompts: 100%|██████████| 1/1 [00:00<00:00, 986.90it/s]
+Processed prompts:   0%|          | 0/1 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s](EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=0 kv_update slot_mapping=226 mode=hybrid
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=0 forward q_shape=(226, 14, 64) max_query_len=226 mode=hybrid branch=prefill_passthrough
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=1 kv_update slot_mapping=226 mode=hybrid
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=1 forward q_shape=(226, 14, 64) max_query_len=226 mode=hybrid branch=prefill_passthrough
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=2 kv_update slot_mapping=226 mode=hybrid
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=2 forward q_shape=(226, 14, 64) max_query_len=226 mode=hybrid branch=prefill_passthrough
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=3 kv_update slot_mapping=226 mode=hybrid
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=3 forward q_shape=(226, 14, 64) max_query_len=226 mode=hybrid branch=prefill_passthrough
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=4 kv_update slot_mapping=226 mode=hybrid
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=4 forward q_shape=(226, 14, 64) max_query_len=226 mode=hybrid branch=prefill_passthrough
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=5 kv_update slot_mapping=226 mode=hybrid
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=5 forward q_shape=(226, 14, 64) max_query_len=226 mode=hybrid branch=prefill_passthrough
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=6 kv_update slot_mapping=226 mode=hybrid
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=6 forward q_shape=(226, 14, 64) max_query_len=226 mode=hybrid branch=prefill_passthrough
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=7 kv_update slot_mapping=226 mode=hybrid
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=7 forward q_shape=(226, 14, 64) max_query_len=226 mode=hybrid branch=prefill_passthrough
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=8 kv_update slot_mapping=226 mode=hybrid
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=8 forward q_shape=(226, 14, 64) max_query_len=226 mode=hybrid branch=prefill_passthrough
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=9 kv_update slot_mapping=226 mode=hybrid
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=9 forward q_shape=(226, 14, 64) max_query_len=226 mode=hybrid branch=prefill_passthrough
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=10 kv_update slot_mapping=226 mode=hybrid
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=10 forward q_shape=(226, 14, 64) max_query_len=226 mode=hybrid branch=prefill_passthrough
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=11 kv_update slot_mapping=226 mode=hybrid
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=11 forward q_shape=(226, 14, 64) max_query_len=226 mode=hybrid branch=prefill_passthrough
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=12 kv_update slot_mapping=226 mode=hybrid
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=12 forward q_shape=(226, 14, 64) max_query_len=226 mode=hybrid branch=prefill_passthrough
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=13 kv_update slot_mapping=226 mode=hybrid
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=13 forward q_shape=(226, 14, 64) max_query_len=226 mode=hybrid branch=prefill_passthrough
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=14 kv_update slot_mapping=226 mode=hybrid
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=14 forward q_shape=(226, 14, 64) max_query_len=226 mode=hybrid branch=prefill_passthrough
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=15 kv_update slot_mapping=226 mode=hybrid
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=15 forward q_shape=(226, 14, 64) max_query_len=226 mode=hybrid branch=prefill_passthrough
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=16 kv_update slot_mapping=226 mode=hybrid
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=16 forward q_shape=(226, 14, 64) max_query_len=226 mode=hybrid branch=prefill_passthrough
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=17 kv_update slot_mapping=226 mode=hybrid
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=17 forward q_shape=(226, 14, 64) max_query_len=226 mode=hybrid branch=prefill_passthrough
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=18 kv_update slot_mapping=226 mode=hybrid
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=18 forward q_shape=(226, 14, 64) max_query_len=226 mode=hybrid branch=prefill_passthrough
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=19 kv_update slot_mapping=226 mode=hybrid
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=19 forward q_shape=(226, 14, 64) max_query_len=226 mode=hybrid branch=prefill_passthrough
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=20 kv_update slot_mapping=226 mode=hybrid
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=20 forward q_shape=(226, 14, 64) max_query_len=226 mode=hybrid branch=prefill_passthrough
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=21 kv_update slot_mapping=226 mode=hybrid
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=21 forward q_shape=(226, 14, 64) max_query_len=226 mode=hybrid branch=prefill_passthrough
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=22 kv_update slot_mapping=226 mode=hybrid
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=22 forward q_shape=(226, 14, 64) max_query_len=226 mode=hybrid branch=prefill_passthrough
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=23 kv_update slot_mapping=226 mode=hybrid
+(EngineCore_DP0 pid=112491) [TQ-TRACE] turboquant.trace pid=112491 layer=23 forward q_shape=(226, 14, 64) max_query_len=226 mode=hybrid branch=prefill_passthrough
+Processed prompts: 100%|██████████| 1/1 [00:00<00:00,  4.80it/s, est. speed input: 1085.10 toks/s, output: 307.27 toks/s]Processed prompts: 100%|██████████| 1/1 [00:00<00:00,  4.80it/s, est. speed input: 1085.10 toks/s, output: 307.27 toks/s]Processed prompts: 100%|██████████| 1/1 [00:00<00:00,  4.80it/s, est. speed input: 1085.10 toks/s, output: 307.27 toks/s]
+[tq] 64 tok in 0.21s  (305.0 tok/s)
+[tq] >>> Use concrete numbers and examples where possible. Avoid vague statements. Use a logical flow. Use a clear distinction between what is observed and what is specu…
+
+>>> TQ stats per worker: [{'num_layers': 24, 'total_compressed_tokens': 210, 'total_buffered_tokens': 16, 'total_memory_bytes': 551040, 'mode': 'hybrid'}]
+>>> hybrid path was exercisable: 210 compressed tokens >= 16 threshold
+
+============================================================
+  baseline:           430.6 tok/s
+  tq (hybrid):        305.0 tok/s  (0.71x)
+  same output text:   True
+  compressed tokens: 210
+============================================================
