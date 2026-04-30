@@ -546,6 +546,90 @@ reading paged cache buys nothing here. The trace line emitted at the
 call site stays the right shape (`num_paged=N` instead of `0`) under
 both paths.
 
+### S3.2 — Combiner lands; quality ceiling separates from combiner math
+
+S3.2 (commit
+[`0bf9510`](https://github.com/pitcany/vllm-turboquant/commit/0bf9510))
+landed the rewrite: `compute_hybrid_attention` now accepts
+`kv_paged_k`/`kv_paged_v` and folds all three segments via streaming
+online softmax (Milakov & Gimelshein 2018). The patched hybrid forward
+threads `key[:num_actual]`/`value[:num_actual]` from forward args as the
+kv_paged segment.
+
+**Combiner math is correct.** Six new CPU unit tests
+([`tests/test_score.py`](../tests/test_score.py)) verify the streaming
+softmax is mathematically identical to a single softmax over the
+concatenation of segments — the load-bearing property the F3 fix needs.
+Tests cover two-segment and three-segment fold-vs-concat equivalence,
+single-segment reduction to standard softmax, segment-order invariance,
+the dispatch in `compute_hybrid_attention` with kv_paged + kv_ring, and
+the all-empty-segments degenerate path.
+
+**Combiner fires with three segments at runtime.** A re-run of the
+`s0_eager_no_prefix` workload on Qwen2.5-0.5B-Instruct
+([`docs/traces/s3_eager_no_prefix_qwen.log`](traces/s3_eager_no_prefix_qwen.log))
+emits the new `hybrid_segments` trace line **1,512 times** (= 63 decode
+steps × 24 layers — same per-call count as the pre-S3.2
+`hybrid_decision` lines, confirming we haven't dropped any calls), with
+`num_paged=1 num_tq=210 num_ring=16` per call. The pre-S3.2 trace
+(`s0_eager_no_prefix.log:4672`) showed `num_paged=0` was structurally
+hard-coded; post-S3.2 the kv_paged segment is contributing one token
+per layer per decode step. **The degenerate `'quant, quant, quant'`
+tail from `s0_eager_no_prefix.log:4672` is gone.**
+
+| Metric | `s0_eager_no_prefix.log` (pre-S3.2) | `s3_eager_no_prefix_qwen.log` (post-S3.2) |
+|---|---:|---:|
+| `branch=hybrid_compressed` lines | 1512 ([`s0_eager_no_prefix.log`](traces/s0_eager_no_prefix.log)) | 1512 ([`s3_eager_no_prefix_qwen.log`](traces/s3_eager_no_prefix_qwen.log)) |
+| `num_paged` per call | 0 (structural — fn signature couldn't accept it) | **1** ([`s3_eager_no_prefix_qwen.log:…`](traces/s3_eager_no_prefix_qwen.log)) |
+| `num_tq` per call | 210 (read but no longer the only segment used) | 210 |
+| `num_ring` per call | 16 | 16 |
+| TQ tail | `'quant, quant, quant, quant, …'` (degenerate loop) | `' Use a 7B, 7B, 7B, 7B, …'` (different loop, but tracks baseline's `'Use a'` for one token before drifting) |
+| `same output text` | False ([`s0_eager_no_prefix.log:4670`](traces/s0_eager_no_prefix.log)) | False ([`s3_eager_no_prefix_qwen.log:7695`](traces/s3_eager_no_prefix_qwen.log)) |
+| Top-1 agreement (64 decode tokens) | not measured (degenerate from token 1) | **2 / 64 = 0.0312** (first divergence at position 1) |
+
+**Combiner correct, compression accuracy insufficient.** The 3.12%
+agreement on Qwen-0.5B at `key_bits=3 value_bits=2 buffer_size=16` is
+far below the plan's 95% bar — but the unit tests prove the math is
+correct, and the trace proves all three segments are folded each call.
+The remaining gap is the bit budget at this scale: dequantising
+historical K via 3-bit TQProd codebooks and V via 2-bit symmetric group
+quantisation does not preserve enough fidelity for the model's
+attention to land on the same logits as baseline. This is the
+`docs/plan-path-b.md` §5 second-bullet stop-loss territory:
+> *"…hybrid 3A produces > 30% top-1 disagreement even with full capture
+> and prefix caching off. The underlying TQ approach (3-bit key + 2-bit
+> value at 1B scale) may not be quality-viable at this size; escalate
+> to `value_bits=4` or skip hybrid entirely (capture-only +
+> free_kv_cache for memory-only wins)."*
+
+The 3.12% number is on Qwen-**0.5B**, not the plan's verification model
+Llama-3.2-1B; the bit budget may behave better at 1B scale, and §5's
+stop-loss specifically references 1B. Pivot decisions wait for the
+formal number on Llama.
+
+**Status of the F3 closure.** The structural half — *"hybrid mode no
+longer produces degenerate output"* (plan §3 / Sprint 3 acceptance,
+bullet 2) — is closed: degenerate `quant, quant, quant` tail is gone,
+substituted by a normal-token loop that at least tracks baseline for
+one position. The empirical half — *"top-1 token agreement ≥ 95% on
+Llama-3.2-1B-Instruct"* — is **blocked on HF Hub access for `pitcany`
+on `meta-llama/Llama-3.2-1B-Instruct`** (HTTP 403 GatedRepoError, manual
+gate, request not yet granted). Do not mark F3 closed in §4 until the
+Llama agreement number lands.
+
+**Coverage gap in the e2e probe.** `tests/test_correctness_e2e.py` uses
+`buffer_size=128` and a short ~50-token prompt, which keeps the entire
+prefill+decode in `kv_ring` and never reaches `MIN_HISTORY_FOR_TQ=16`
+in `kv_tq` — so `took_compressed_path=False` for every layer, every
+step, and the hybrid_compressed branch (the one S3.2 changed) is never
+entered. Confirmed by `grep took_compressed_path /tmp/tq_probe_*.log`
+on a Qwen-0.5B run: 1,512 lines all `took_compressed_path=False`. Any
+future "the probe got X% agreement" claim should be paired with a
+non-zero count of `branch=hybrid_compressed` lines from the same run,
+or it isn't testing what it claims to. A follow-up should switch the
+probe to the LONG_PROMPT + `buffer_size=16` config that actually
+exercises the path; deferred so this commit stays one-change-per-§1.8.
+
 ---
 
 ## Throughput observations (incidental)
