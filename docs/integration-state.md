@@ -67,6 +67,75 @@ described, and it is gated on `enforce_eager=False` exactly. The
 once before the inductor graph is cached; after that the compiled op
 takes over.
 
+### S1.1 — `torch.library` override of `vllm::unified_kv_cache_update` is structurally blocked
+
+Path B Sprint 1 / S1.1 attempted the plan's preferred fix (1B): re-register
+`vllm::unified_kv_cache_update` via `torch.library` so the override calls
+the original *and* writes a copy of `(key, value, slot_mapping)` into TQ's
+store on every dispatch. This was abandoned at the recon step on
+2026-04-29 — before any code change — because torch's dispatcher
+refuses double-registration and exposes no public deregister API.
+
+**Op signature (recon, not docstring).** Captured directly from the live
+runtime:
+
+```text
+$ python -c "import torch, vllm.model_executor.layers.attention.attention; \
+             print(torch._C._dispatch_dump('vllm::unified_kv_cache_update'))"
+name: vllm::unified_kv_cache_update
+schema: vllm::unified_kv_cache_update(Tensor key, Tensor value, str layer_name) -> Tensor
+debug: registered at .../vllm/utils/torch_utils.py:789
+alias analysis kind: FROM_SCHEMA
+CUDA: registered at .../vllm/utils/torch_utils.py:789 :: (none) [ boxed ]
+Meta: registered at .../vllm/utils/torch_utils.py:789 :: (none) [ boxed ]
+```
+
+The op is registered at module-load time of
+`vllm.model_executor.layers.attention.attention` via
+`direct_register_custom_op` (see `vllm/utils/torch_utils.py:792`),
+which calls `vllm_lib.impl(op_name, op_func, dispatch_key="CUDA")` on a
+single process-wide `vllm_lib = Library("vllm", "FRAGMENT")`
+(`vllm/utils/torch_utils.py:789`). Both the `CUDA` backend impl and the
+`Meta` fake impl are registered there.
+
+**Re-registration error.** Re-registering on the same op + dispatch key
+fails:
+
+```text
+$ python -c "
+> import torch
+> import vllm.model_executor.layers.attention.attention
+> my_lib = torch.library.Library('vllm', 'IMPL')
+> my_lib.impl('unified_kv_cache_update', lambda *a: None, 'CUDA')
+> "
+RuntimeError: This is not allowed since there's already a kernel
+registered from python overriding unified_kv_cache_update's behavior
+for CUDA dispatch key and vllm namespace.
+```
+
+This matches torch's documented one-impl-per-(op, dispatch-key) policy.
+
+**Module-level patch is also stale.** Replacing
+`vllm.model_executor.layers.attention.attention.unified_kv_cache_update`
+on the module *after* registration has zero effect on calls dispatched
+via `torch.ops.vllm.unified_kv_cache_update(...)`: the `Library.impl(...)`
+call captured the original function reference, not a name lookup.
+
+**No public deregister API.** Surveying `dir(torch._C)` for dispatch-related
+APIs (run on torch 2.10.0 in this env), the only deregister-shaped name
+is `_unset_dispatch_mode` (a TLS guard, unrelated). The only viable
+"replace" path is `Library._destroy()`, which destroys *every*
+registration on the library — and `vllm_lib` is the namespace owner for
+all custom vLLM ops, so destroying it would unregister
+`unified_attention`, `unified_attention_with_output`, `unified_mla_*`,
+`mamba_mixer*`, `gdn_attention_core`, `kda_attention`, etc. That is the
+plan's "bundling" anti-pattern (§1.8) at the worst possible scale.
+
+**Conclusion (per plan §3 / Sprint 1, S1.2 stop-condition).** S1.1 is
+structurally blocked by torch's dispatcher invariants, not by anything
+specific to vLLM 0.17.1. Falling back to S1.2 (1A — forward pre-hooks
+on the `Attention` `nn.Module` via `register_forward_pre_hook`).
+
 ---
 
 ## F2 — Prefix caching evades capture even in eager mode
