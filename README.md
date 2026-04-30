@@ -161,8 +161,7 @@ turboquant/
   store.py             # Compressed KV store (quantize + append + flat cache)
   score.py             # Attention scoring from compressed keys
   integration/vllm.py  # vLLM adapter (monkey-patch, free_kv_cache, hybrid decode)
-  triton_kernels.py    # 3 fused Triton kernels for decode attention
-  vllm_attn_backend.py # Thin shim delegating to integration/vllm.py
+  vllm_attn_backend.py # Thin shim delegating to integration/vllm.py (deprecated)
 
 proof.py               # 2-process A/B benchmark (baseline vs TQ) -- needs local model
 benchmark.py           # Multi-model throughput/quality harness -- needs local model
@@ -253,7 +252,7 @@ A formal test suite has not yet been ported into this repo. Treat `proof.py` /
 - **Prefill still uses paged cache**: KV cache is allocated at engine init and used during prefill. TQ frees it after. True zero-allocation requires deeper vLLM integration.
 - **Only full-attention layers**: Linear-attention/Mamba layers are not compressed.
 - **Value quantization is the bottleneck**: 2-bit values cause cos_sim=0.94 degradation. Use 4-bit values (cos_sim=0.997) for quality-sensitive workloads.
-- **Hybrid decode dequantizes all history**: During compute, all compressed tokens are expanded to float32. The paper's fused Triton kernels exist but the hybrid path doesn't use them yet.
+- **Hybrid decode dequantizes all history**: During compute, all compressed tokens are expanded to float32 and attention runs through `torch.einsum`. There is no fused Triton kernel on the live path; an earlier sketch was removed because nothing in the package called it. Wiring a fused decode kernel into `score._attend_compressed_only` is a known perf win, not yet done.
 - **MoE models benefit less**: Models with linear-attention layers (Qwen3.5 MoE, Mamba hybrids) have incompressible state that limits TQ's overall impact.
 
 ## Environment
