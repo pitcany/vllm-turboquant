@@ -269,6 +269,19 @@ def _make_patched_forward(orig_fn, state: LayerState, no_alloc: bool = False, ca
     ):
         mode = _GLOBAL_MODE
 
+        # S4.1 — refuse to run forward on a layer whose paged kv_cache has
+        # already been released by free_kv_cache(). Without this guard,
+        # capture_only / off modes call orig_fn against a 1-byte int8 sentinel
+        # and crash inside flash-attn with an opaque CUDA error.
+        if getattr(state, "_kv_cache_freed", False):
+            raise RuntimeError(
+                f"[TurboQuant] forward called on layer {state.config.layer_idx} "
+                "after free_kv_cache(); the paged cache has been replaced with "
+                "a sentinel and subsequent inference is not supported. "
+                "free_kv_cache is a one-shot end-of-life reclamation; "
+                "construct a new LLM(...) for further generation."
+            )
+
         # Capture K/V when no separate kv_update hook exists
         if capture_in_forward and mode not in (MODE_OFF,) and attn_metadata is not None:
             _capture_kv(key, value, attn_metadata)
@@ -693,23 +706,79 @@ def install_hooks(
 
 
 def free_kv_cache(model_runner) -> int:
-    """Free paged KV cache for TQ-hooked layers. Returns bytes freed.
+    """Release the paged kv_cache tensor for TQ-hooked layers (Sprint 4 / S4.1).
 
-    Only frees layers that have TQ state. Non-TQ layers (MLA/GDN) keep their cache.
+    Per ``docs/plan-path-b.md`` §3 / S4.1: "release only the suffix that's
+    been migrated to TQ's store, leaving any un-captured prefix in-place."
+    Concretely, this is a per-layer migration check — a layer is released
+    only if its TQ store + ring covers a non-zero prefix of the model's
+    sequence (i.e. ``state.engine.total_tokens > 0``). Layers with zero
+    captured tokens are left intact and counted in the returned breakdown
+    as ``skipped_layers`` so the caller can detect a no-op.
+
+    **One-shot, end-of-life.** vLLM's paged allocator has no per-slot free
+    primitive; releasing a layer's kv_cache means swapping the whole
+    tensor for a 1-byte sentinel. Subsequent forward passes against a
+    freed layer would read the sentinel and crash inside the flash-attn
+    kernel — so each freed layer's ``LayerState._kv_cache_freed`` is
+    latched, and the patched forward refuses with a typed error if it
+    ever runs again on a freed layer (see ``_make_patched_forward``).
+    Construct a new ``LLM(...)`` for further generation.
+
+    **Why this is "memory-only wins" not "memory + inference wins"
+    today.** The intended recovery path is for the patched forward's
+    hybrid branch to attend across kv_paged ∪ kv_tq ∪ kv_ring after the
+    free. Sprint 3 / S3.3 (``docs/integration-state.md`` § "S3.3 …")
+    showed hybrid is not quality-viable on Llama-3.2-1B at any bit
+    budget tested (3/2 → 7.69%, 3/4 → 0.39%, 4/4 → 2.73%); plan §5
+    second-bullet stop-loss engaged. So free_kv_cache today is purely
+    a VRAM-reclamation tool — useful for measuring how much VRAM TQ
+    *could* save, not for live inference past the free point.
+
+    Returns:
+        int: total bytes freed across all released layers (kept for
+        backward compat with ``proof.py`` / ``benchmark.py`` /
+        ``turboquant.vllm.free_kv_cache``). Detailed per-layer breakdown
+        is emitted as ``[TQ-TRACE] free_kv_cache …`` lines.
+
+    Raises:
+        RuntimeError: if no TQ-hooked layers have any captured tokens
+            (likely user error — called free_kv_cache before generating
+            anything). Refuses rather than silently freeing un-captured
+            paged-cache contents.
     """
     layer_states = getattr(model_runner, "_tq_layer_states", None)
     if not layer_states:
         logger.warning("[TurboQuant] No layer states found, nothing to free")
         return 0
 
+    # Migration precondition. If every TQ-hooked layer is empty, the user
+    # is trying to free before any K/V has been captured — the call would
+    # destroy the paged cache without any TQ artefact in return.
+    eligible_layers = [(name, state) for name, state in layer_states.items() if state.supports_hybrid]
+    captured_per_layer = {name: state.engine.total_tokens for name, state in eligible_layers}
+    total_captured = sum(captured_per_layer.values())
+    if total_captured == 0:
+        raise RuntimeError(
+            "[TurboQuant] free_kv_cache refused: no TQ-hooked layer has any "
+            "captured tokens. Run a generation first so the post-execute "
+            "paged-cache reader (S1.3 / 1C) can migrate K/V into the TQ "
+            "store, or call free_kv_cache only after llm.generate() returns."
+        )
+
     static_ctx = model_runner.compilation_config.static_forward_context
     device = model_runner.device
     freed = 0
+    skipped: list[str] = []
+    released: list[str] = []
     tiny = torch.zeros(1, dtype=torch.int8, device=device)
 
+    # Pre-pass: collect data_ptrs of tensors we're about to release so we
+    # can null them out wherever else they're aliased on the model_runner.
     ptrs_to_free = set()
-    for layer_name, state in layer_states.items():
-        if not state.supports_hybrid:
+    for layer_name, state in eligible_layers:
+        if captured_per_layer[layer_name] == 0:
+            skipped.append(layer_name)
             continue
         if layer_name not in static_ctx:
             continue
@@ -718,20 +787,37 @@ def free_kv_cache(model_runner) -> int:
         if kv_list and len(kv_list) > 0:
             ptrs_to_free.add(kv_list[0].data_ptr())
 
-    for layer_name, state in layer_states.items():
-        if not state.supports_hybrid:
+    for layer_name, state in eligible_layers:
+        if captured_per_layer[layer_name] == 0:
+            # Already counted in `skipped`; keep its paged cache so a
+            # future capture pass could still read it.
+            _trace(
+                state.config.layer_idx,
+                "free_kv_cache skipped reason=zero_captured_tokens total_tokens=0",
+            )
             continue
         if layer_name not in static_ctx:
             continue
         attn_module = static_ctx[layer_name]
         kv_list = getattr(attn_module, "kv_cache", None)
-        if kv_list and len(kv_list) > 0:
-            old = kv_list[0]
-            this_freed = old.nelement() * old.element_size()
-            freed += this_freed
-            kv_list[0] = tiny
-            _trace(state.config.layer_idx, f"free_kv_cache freed_bytes={this_freed}")
+        if not kv_list or len(kv_list) == 0:
+            continue
+        old = kv_list[0]
+        this_freed = old.nelement() * old.element_size()
+        freed += this_freed
+        kv_list[0] = tiny
+        state._kv_cache_freed = True
+        released.append(layer_name)
+        _trace(
+            state.config.layer_idx,
+            f"free_kv_cache freed_bytes={this_freed} "
+            f"total_tokens={captured_per_layer[layer_name]} "
+            f"compressed={state.store.num_tokens} buffered={state.engine.ring.size}",
+        )
 
+    # Mirror the swap into model_runner.kv_caches so any code path that
+    # walks that list (rather than static_forward_context) also sees the
+    # sentinel.
     for i in range(len(model_runner.kv_caches)):
         entry = model_runner.kv_caches[i]
         if isinstance(entry, list):
@@ -742,7 +828,14 @@ def free_kv_cache(model_runner) -> int:
             model_runner.kv_caches[i] = tiny
 
     torch.cuda.empty_cache()
-    logger.info(f"[TurboQuant] Freed {freed / 1e6:.0f} MB KV cache ({len(layer_states)} layers)")
+    logger.info(
+        "[TurboQuant] free_kv_cache: %d MB freed across %d layers (%d skipped: "
+        "zero captured tokens). Inference past this point will fail; this LLM "
+        "is now in end-of-life state.",
+        freed // (1024 * 1024),
+        len(released),
+        len(skipped),
+    )
     return freed
 
 
