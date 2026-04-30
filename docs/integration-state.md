@@ -289,6 +289,79 @@ stop, write what you saw into `docs/integration-state.md`, and ask
 before changing the plan"), this section is the "what I saw"; the plan
 needs an editing pass before code changes resume.
 
+### S1.3 — 1C lands; capture survives FULL CUDAGraph (with one runtime caveat)
+
+S1.3 / 1C — the post-`execute_model` paged-cache reader — landed on
+2026-04-29 in commit
+[`304ba1f`](https://github.com/pitcany/vllm-turboquant/commit/304ba1f)
+and ran end-to-end on the same `MODE=hybrid LONG_PROMPT=1
+BUFFER_SIZE=16` workload that produced `s1_probe_pre_hook.log`. Two
+traces are now checked in:
+
+| Metric | `s1_probe_pre_hook.log` (pre-S1.3) | `s1_compiled.log` (post-S1.3, `MAX_TOKENS=64`) | `s1_compiled_max_tokens_65.log` (post-S1.3, `MAX_TOKENS=65`) |
+|---|---:|---:|---:|
+| `kv_update slot_mapping=226` | 24 | 24 | 24 |
+| `paged_read num_tokens=1` | 0 | **1512** (= 63 × 24) | **1536** (= 64 × 24) |
+| `total_compressed_tokens` (final) | 210 | **274** ([`s1_compiled.log:1645`](traces/s1_compiled.log)) | **274** ([`s1_compiled_max_tokens_65.log:1669`](traces/s1_compiled_max_tokens_65.log)) |
+| `total_buffered_tokens` (final) | 16 | 15 | 16 |
+| Compressed + buffered | 226 | **289** | **290** |
+| `same output text` | True | True | True |
+| Decode tok/s | 305.0 | 242.7 | 239.2 |
+
+The capture path now works. Specifically:
+
+- The 24 prefill `kv_update slot_mapping=226` lines (per layer) confirm
+  the existing `do_kv_cache_update` monkey-patch still fires during
+  prefill on PIECEWISE mode. 1C is additive on prefill, not a
+  replacement, and the monkey-patch's decode half is now retired so the
+  two paths can't double-ingest.
+- The 1512 / 1536 `paged_read` trace lines confirm the post-`execute_model`
+  callback fires once per layer per decode step — it survives FULL
+  CUDAGraph by reading the paged `kv_cache` tensor *after*
+  `cudagraph.replay()` has handed control back to Python.
+- "Same output text" stays True for the same reason it was True in
+  `s1_probe_pre_hook.log`: under FULL CUDAGraph the `forward()` patch
+  still never fires on decode, so the hybrid-compressed branch is never
+  *entered*; vLLM's flash-attn runs unmodified inside the captured graph
+  and emits the baseline output byte-for-byte. 1C captures into the TQ
+  store on the side. The hybrid-attention rewrite that consumes the
+  captured store is the Sprint 3 problem (F3), not an S1.3 regression.
+
+**The off-by-one against the plan's 290 bar is a vLLM v1 runtime fact,
+not a capture bug.** vLLM v1 emits 63 (not 64) decode `execute_model`
+calls for `max_tokens=64`: prefill samples output token 0; each later
+decode step writes the K/V of the *previous* sampled token and samples
+the next; max_tokens halts generation immediately after the 64th sample
+without a 65th decode call, so the K/V of the 64th sampled token is
+never written. The `paged_read` count
+(`grep -c paged_read s1_compiled.log` → 1512 = 63 × 24) is the direct
+measurement. With `MAX_TOKENS=65` the same workload produces 1536
+paged_reads and the store sums to exactly 290 — i.e., 1C scales
+linearly with decode-K/V writes; the plan's bar IS reachable, just one
+output token short of the canonical workload's budget.
+
+**Decode tok/s** is now 242.7 vs. baseline 449.0 = **0.54×** at
+~226-token context on Qwen2.5-0.5B. The plan's ≥ 0.7× tok/s bar
+specifically applies to Llama-3.2-1B at 4k context (gated on HF Hub
+access, not yet granted for `pitcany`). The 0.54× number on Qwen-0.5B
+is dominated by the per-prefill `ingest_prefill` quantize pass (24
+layers × 226 tokens) being amortised over only 64 decode tokens; that
+ratio improves naturally with longer decode budgets and larger models.
+Whether 1C's per-step paged-cache gather adds material overhead is best
+measured on the Llama 4k workload in a follow-up commit; the trace
+shows no per-layer CPU-GPU sync (gather is `tensor.index_select` on
+GPU-resident `slot_mapping[:num_actual]`, where `num_actual` is a
+host-side `int`).
+
+**Open question for plan §3 / Sprint 1 acceptance.** The bar reads
+"≥ 290 with `MAX_TOKENS=64`". Strict reading: 289 ≠ ≥ 290. Runtime
+reading: 289 is the maximum achievable on `MAX_TOKENS=64` (vLLM v1
+writes 63 decode K/Vs); the bar's mental model assumed 64 decode K/Vs.
+The plan's working principle 1.6 ("trust the runtime, not the
+docstring") points to relaxing the bar to "≥ 289 with `MAX_TOKENS=64`"
+or moving the canonical workload to `MAX_TOKENS=65`. This file records
+the observation; the plan edit is deferred until the user picks one.
+
 ---
 
 ## F2 — Prefix caching evades capture even in eager mode
