@@ -199,21 +199,27 @@ bypasses **all** Python-level hooks (custom op overrides, monkey-patches,
 **Acceptance criteria.**
 
 - A new `s1_compiled.log` (default compile, `prefix=OFF`,
-  `MODE=hybrid LONG_PROMPT=1 BUFFER_SIZE=16 MAX_TOKENS=64`) shows
+  `MODE=hybrid LONG_PROMPT=1 BUFFER_SIZE=16 MAX_TOKENS=65`) shows
   **TQ store grows by ≥ 64 tokens during decode** — measured by the
   delta between `total_compressed_tokens + total_buffered_tokens` at
   end-of-prefill vs. end-of-run. Today's
   `docs/traces/s1_probe_pre_hook.log:132` measures the prefill-only
-  baseline at 226 (210 + 16); the post-S1.3 trace must read ≥ 290.
-  *(Old criterion: "capture firing per-token under default vLLM
-  config (no `enforce_eager`)" — retired because under FULL CUDAGraph
-  no hook-based capture can fire per-token by construction; the
-  post-step paged-cache reader doesn't show up as a per-token Python
-  trace line either.)*
+  baseline at 226 (210 + 16); the post-S1.3 trace must read ≥ 290
+  (= 226 prefill + 64 decode-K/V writes). *Why `MAX_TOKENS=65` and not
+  64:* vLLM v1 emits `N − 1` decode `execute_model` calls for
+  `max_tokens=N` (the K/V for the final sampled token is never written,
+  since no later decode uses it; verified empirically — see
+  `docs/integration-state.md` § "S1.3 — 1C lands…"). To realise 64
+  decode K/V writes the workload budget needs to be 65 generated tokens.
+  *(Old criterion: "capture firing per-token under default vLLM config
+  (no `enforce_eager`)" — retired because under FULL CUDAGraph no
+  hook-based capture can fire per-token by construction; the post-step
+  paged-cache reader doesn't show up as a per-token Python trace line
+  either.)*
 - A new TQ-vs-baseline correctness measurement on the same
-  Qwen2.5-0.5B workload: top-1 token agreement ≥ 95% on the 64-decode
-  output, evidenced by the same `s1_compiled.log` capturing both
-  passes' tokenised output. *(Pre-S1.3 it's trivially 100% because the
+  Qwen2.5-0.5B workload: top-1 token agreement ≥ 95% on the 65-token
+  greedy decode output, evidenced by the same `s1_compiled.log`
+  capturing both passes' tokenised output. *(Pre-S1.3 it's trivially 100% because the
   hybrid-compressed branch is never entered; post-S1.3 the branch can
   be entered, and we need to confirm it doesn't degrade output
   byte-for-byte before Sprint 3 takes over the > 95% bar on Llama.)*
@@ -402,4 +408,7 @@ It is **not** updated by:
 *Last updated: 2026-04-29 (initial draft + same-day Sprint 1 rescope
 after S1.1 / S1.2 recon: 1B blocked structurally, 1A blocked
 empirically, S1.3 / 1C now active; F1 reframed as F1bis in
-`docs/integration-state.md`).*
+`docs/integration-state.md`. Same-day amendment: Sprint 1 canonical
+workload changed from `MAX_TOKENS=64` to `MAX_TOKENS=65` so the
+≥ 290 captured-tokens bar is reachable — vLLM v1 emits N − 1 decode
+K/V writes for `max_tokens=N`.)*
