@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import types
 from dataclasses import dataclass, field
 
@@ -37,6 +38,48 @@ MODE_FULL_TQ = "full_tq"
 _VALID_MODES = (MODE_OFF, MODE_CAPTURE_ONLY, MODE_HYBRID, MODE_FULL_TQ)
 
 _GLOBAL_MODE = MODE_CAPTURE_ONLY
+
+# ---------------------------------------------------------------------------
+# Diagnostic trace plumbing (S0.1 of docs/plan-path-b.md).
+#
+# When TURBOQUANT_TRACE=1 in the environment of *any* process running this
+# module (the driver, or a vLLM worker subprocess that inherits env), every
+# interception point below emits a single-line debug record on a dedicated
+# logger ``turboquant.trace`` whose handler uses a fixed format so that
+# subsequent grep over the captured log can settle questions like "did the
+# compiled kv_update fire?". Default off — zero cost when the env var is
+# unset (one os.environ.get + a bool check per call).
+# ---------------------------------------------------------------------------
+
+_TRACE_LOGGER = logging.getLogger("turboquant.trace")
+_TRACE_FORMAT = "[TQ-TRACE] %(name)s pid=%(process)d layer=%(layer)d %(message)s"
+_TRACE_CONFIGURED = False
+
+
+def _trace_enabled() -> bool:
+    return bool(os.environ.get("TURBOQUANT_TRACE"))
+
+
+def _ensure_trace_configured() -> None:
+    """Attach a stderr handler to ``turboquant.trace`` (idempotent, per-process)."""
+    global _TRACE_CONFIGURED
+    if _TRACE_CONFIGURED:
+        return
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter(_TRACE_FORMAT))
+    _TRACE_LOGGER.addHandler(handler)
+    _TRACE_LOGGER.setLevel(logging.DEBUG)
+    # Don't propagate to root so we don't double-print under vLLM's logger setup.
+    _TRACE_LOGGER.propagate = False
+    _TRACE_CONFIGURED = True
+
+
+def _trace(layer_idx: int, msg: str) -> None:
+    """Emit a single-line trace record. No-op unless TURBOQUANT_TRACE is set."""
+    if not _trace_enabled():
+        return
+    _ensure_trace_configured()
+    _TRACE_LOGGER.debug(msg, extra={"layer": layer_idx})
 
 
 def set_mode(mode: str):
@@ -131,10 +174,12 @@ def _make_patched_kv_update(orig_fn, state: LayerState, no_alloc: bool = False):
             orig_fn(self_impl, layer, key, value, kv_cache, slot_mapping)
 
         mode = _GLOBAL_MODE
+        num_tokens = slot_mapping.shape[0]
+        _trace(state.config.layer_idx, f"kv_update slot_mapping={num_tokens} mode={mode}")
+
         if mode == MODE_OFF:
             return
 
-        num_tokens = slot_mapping.shape[0]
         if num_tokens <= 1:
             # Decode token — append to ring buffer
             state.engine.ingest_decode(key, value, num_tokens)
@@ -188,10 +233,20 @@ def _make_patched_forward(orig_fn, state: LayerState, no_alloc: bool = False, ca
     def _capture_kv(key, value, attn_metadata):
         """Capture K/V tensors into TQ store."""
         num_tokens = getattr(attn_metadata, "num_actual_tokens", key.shape[0])
+        _trace(state.config.layer_idx, f"capture_kv num_tokens={num_tokens} via_forward=True")
         if num_tokens <= 1:
             state.engine.ingest_decode(key[:num_tokens], value[:num_tokens], num_tokens)
         else:
             state.engine.ingest_prefill(key[:num_tokens], value[:num_tokens], num_tokens)
+
+    def _emit_forward_trace(branch: str, query, attn_metadata, mode: str) -> None:
+        if not _trace_enabled():
+            return
+        max_q = getattr(attn_metadata, "max_query_len", -1) if attn_metadata is not None else -1
+        _trace(
+            state.config.layer_idx,
+            f"forward q_shape={tuple(query.shape)} max_query_len={max_q} mode={mode} branch={branch}",
+        )
 
     def patched(
         self_impl,
@@ -213,6 +268,7 @@ def _make_patched_forward(orig_fn, state: LayerState, no_alloc: bool = False, ca
 
         # Off or capture-only: always use flash
         if mode in (MODE_OFF, MODE_CAPTURE_ONLY):
+            _emit_forward_trace(branch=mode, query=query, attn_metadata=attn_metadata, mode=mode)
             return orig_fn(
                 self_impl,
                 layer,
@@ -228,6 +284,7 @@ def _make_patched_forward(orig_fn, state: LayerState, no_alloc: bool = False, ca
 
         # Profiling pass or prefill: use flash
         if attn_metadata is None:
+            _emit_forward_trace(branch="profile", query=query, attn_metadata=None, mode=mode)
             return orig_fn(
                 self_impl,
                 layer,
@@ -244,6 +301,7 @@ def _make_patched_forward(orig_fn, state: LayerState, no_alloc: bool = False, ca
         is_prefill = attn_metadata.max_query_len > 1
         if is_prefill:
             if no_alloc:
+                _emit_forward_trace(branch="prefill_no_alloc", query=query, attn_metadata=attn_metadata, mode=mode)
                 result = _no_alloc_prefill_attention(state, self_impl, query, key, value, attn_metadata)
                 num_actual = attn_metadata.num_actual_tokens
                 result_flat = result.reshape(num_actual, state.config.num_query_heads * state.config.head_dim).to(
@@ -259,6 +317,7 @@ def _make_patched_forward(orig_fn, state: LayerState, no_alloc: bool = False, ca
                 if query.dim() == 3:
                     return result.to(query.dtype)
                 return result_flat
+            _emit_forward_trace(branch="prefill_passthrough", query=query, attn_metadata=attn_metadata, mode=mode)
             return orig_fn(
                 self_impl,
                 layer,
@@ -275,7 +334,15 @@ def _make_patched_forward(orig_fn, state: LayerState, no_alloc: bool = False, ca
         # --- Hybrid decode ---
         if mode == MODE_HYBRID and state.supports_hybrid:
             flat = state.store.get_flat_cache()
-            if flat is not None and flat.num_tokens >= 16:
+            flat_n = flat.num_tokens if flat is not None else 0
+            ring_n = state.engine.ring.size
+            took_compressed = flat is not None and flat.num_tokens >= 16
+            _trace(
+                state.config.layer_idx,
+                f"hybrid_decision flat_num_tokens={flat_n} ring_size={ring_n} took_compressed_path={took_compressed}",
+            )
+            if took_compressed:
+                _emit_forward_trace(branch="hybrid_compressed", query=query, attn_metadata=attn_metadata, mode=mode)
                 num_actual = attn_metadata.num_actual_tokens
                 q = query[:num_actual]
                 if q.dim() == 2:
@@ -311,6 +378,7 @@ def _make_patched_forward(orig_fn, state: LayerState, no_alloc: bool = False, ca
 
         # Fallback to flash
         if no_alloc:
+            _emit_forward_trace(branch="no_alloc_zeros", query=query, attn_metadata=attn_metadata, mode=mode)
             num_actual = getattr(attn_metadata, "num_actual_tokens", query.shape[0])
             if query.dim() == 3:
                 return torch.zeros_like(query[:num_actual])
@@ -320,6 +388,7 @@ def _make_patched_forward(orig_fn, state: LayerState, no_alloc: bool = False, ca
                 dtype=query.dtype,
                 device=query.device,
             )
+        _emit_forward_trace(branch="hybrid_fallback", query=query, attn_metadata=attn_metadata, mode=mode)
         return orig_fn(
             self_impl,
             layer,
@@ -425,6 +494,11 @@ def install_hooks(
         state = _create_layer_state(cfg)
         layer_states[layer_name] = state
 
+        _trace(
+            layer_idx,
+            f"install name={layer_name!r} backend={backend_kind} head_dim={head_dim} num_kv_heads={int(num_kv_heads)}",
+        )
+
         if backend_kind == "flash":
             has_separate_kv_update = hasattr(impl, "do_kv_cache_update")
             needs_forward_capture = not has_separate_kv_update
@@ -501,8 +575,10 @@ def free_kv_cache(model_runner) -> int:
         kv_list = getattr(attn_module, "kv_cache", None)
         if kv_list and len(kv_list) > 0:
             old = kv_list[0]
-            freed += old.nelement() * old.element_size()
+            this_freed = old.nelement() * old.element_size()
+            freed += this_freed
             kv_list[0] = tiny
+            _trace(state.config.layer_idx, f"free_kv_cache freed_bytes={this_freed}")
 
     for i in range(len(model_runner.kv_caches)):
         entry = model_runner.kv_caches[i]
