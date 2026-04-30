@@ -44,10 +44,15 @@ def run_script(name, code):
     env["TOKENIZERS_PARALLELISM"] = "false"
     r = subprocess.run([PYTHON, path], capture_output=True, text=True, env=env, timeout=600)
     if r.returncode != 0:
-        print(f"  {name} FAILED")
-        for line in r.stderr.split("\n"):
-            if "Error" in line and "Warning" not in line and "Future" not in line:
-                print(f"    {line.strip()}")
+        # Don't grep for "Error" — segfaults, OOM kills, and CUDA crashes
+        # often print no such line and we'd silently swallow the cause.
+        tail_lines = r.stderr.strip().split("\n")[-60:]
+        print(f"  {name} FAILED (exit {r.returncode})")
+        print(f"    script: {path}")
+        print(f"    --- last {len(tail_lines)} lines of stderr ---")
+        for line in tail_lines:
+            print(f"    {line}")
+        print("    --- end stderr ---")
         return None
     for line in reversed(r.stdout.strip().split("\n")):
         try:
