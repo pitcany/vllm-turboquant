@@ -36,6 +36,13 @@ import os
 import sys
 import time
 
+# Importing turboquant.vllm has a side effect of setting
+# VLLM_ALLOW_INSECURE_SERIALIZATION=1 if it isn't already set, which is
+# required for vLLM v1 collective_rpc to transport TurboQuant's installer
+# closure to worker processes. This must happen BEFORE `from vllm import LLM`
+# so the engine subprocess inherits the env var.
+import turboquant.vllm  # noqa: F401  (side-effect import, see comment above)
+
 DEFAULT_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
 PROMPT = "Briefly explain how KV cache compression speeds up LLM inference."
 

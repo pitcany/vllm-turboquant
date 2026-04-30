@@ -11,3 +11,4 @@ build/
 *.log
 /tmp/
 test-output/
+.claude/

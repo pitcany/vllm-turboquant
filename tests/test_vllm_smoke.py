@@ -51,6 +51,77 @@ def test_enable_turboquant_helpful_error_on_non_llm() -> None:
         enable_turboquant(Stub())
 
 
+@pytest.mark.unit
+def test_resolve_executor_prefers_top_level_collective_rpc() -> None:
+    """Top-level engine.collective_rpc is the first path tried."""
+    from turboquant.vllm import _resolve_executor
+
+    class FakeEngine:
+        def collective_rpc(self, fn):
+            return [fn(self)]
+
+        # Also has a deeper executor; we should pick the top-level shortcut.
+        class _Inner:
+            class _Inner2:
+                class _Exec:
+                    def collective_rpc(self, fn):
+                        raise AssertionError("deep path should not be picked")
+                model_executor = _Exec()
+            engine_core = _Inner2()
+        engine_core = _Inner()
+
+    class FakeLLM:
+        llm_engine = FakeEngine()
+
+    resolved = _resolve_executor(FakeLLM())
+    assert resolved is FakeLLM.llm_engine
+
+
+@pytest.mark.unit
+def test_resolve_executor_falls_back_to_deep_path() -> None:
+    """When only the deep engine_core.engine_core.model_executor exists, use it."""
+    from turboquant.vllm import _resolve_executor
+
+    class _Exec:
+        def collective_rpc(self, fn):
+            return [fn(self)]
+
+    class _Core2:
+        model_executor = _Exec()
+
+    class _Core1:
+        engine_core = _Core2()
+
+    class FakeEngine:
+        # No top-level collective_rpc, no direct model_executor.
+        engine_core = _Core1()
+
+    class FakeLLM:
+        llm_engine = FakeEngine()
+
+    resolved = _resolve_executor(FakeLLM())
+    assert resolved is _Core2.model_executor
+
+
+@pytest.mark.unit
+def test_resolve_executor_lists_paths_when_none_match() -> None:
+    """Error message must mention every path we tried, so users can debug."""
+    from turboquant.vllm import TurboQuantVLLMError, _resolve_executor
+
+    class FakeEngine:
+        pass  # no collective_rpc, no model_executor, no engine_core
+
+    class FakeLLM:
+        llm_engine = FakeEngine()
+
+    with pytest.raises(TurboQuantVLLMError) as exc:
+        _resolve_executor(FakeLLM())
+
+    msg = str(exc.value)
+    assert "collective_rpc" in msg
+    assert "model_executor" in msg
+
+
 @pytest.mark.integration
 def test_smoke_with_vllm_if_available() -> None:
     """If vLLM is installed, importing the integration module shouldn't crash."""

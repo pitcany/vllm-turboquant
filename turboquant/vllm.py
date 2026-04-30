@@ -31,9 +31,26 @@ Typical usage
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Optional
 
 logger = logging.getLogger("turboquant.vllm")
+
+# vLLM 0.17.x's default RPC serializer rejects closures with
+# "Object of type <class 'function'> is not serializable" or, worse, lets
+# the parent send a closure but the worker subprocess can't decode it
+# ("Extension type code 2 is not supported"). The env var has to be set
+# BEFORE vllm.LLM(...) constructs the engine subprocess, so we set it at
+# import time on the assumption that the user imports turboquant.vllm
+# before constructing the LLM. If they construct LLM first, set this var
+# yourself in your environment before launching the process.
+if not os.environ.get("VLLM_ALLOW_INSECURE_SERIALIZATION"):
+    os.environ["VLLM_ALLOW_INSECURE_SERIALIZATION"] = "1"
+    logger.info(
+        "[TurboQuant] Set VLLM_ALLOW_INSECURE_SERIALIZATION=1 at import time so "
+        "vLLM v1 collective_rpc accepts our installer closure. Set this env var "
+        "yourself before launching if you'd rather control it explicitly."
+    )
 
 # Public mode names. Map onto the canonical modes in
 # turboquant.integration.vllm; legacy names from vllm_attn_backend
@@ -57,10 +74,22 @@ class TurboQuantVLLMError(RuntimeError):
 
 
 def _resolve_executor(llm: Any) -> Any:
-    """Walk ``llm`` to the v1 executor that owns the worker(s).
+    """Find an object on ``llm`` that exposes ``collective_rpc`` for fan-out.
 
-    Raises a helpful error if the path is not found, since this is the most
-    likely thing to break with a vLLM version bump.
+    vLLM v1 exposes the worker RPC at multiple call-sites depending on
+    whether the engine runs in-process or in a subprocess:
+
+    * top-level shortcut on the engine itself (works in both modes):
+      ``llm.llm_engine.collective_rpc``
+    * ``llm.llm_engine.model_executor`` (UniProcExecutor — in-process only)
+    * deep path ``llm.llm_engine.engine_core.engine_core.model_executor``
+      (only when ``VLLM_ENABLE_V1_MULTIPROCESSING=0`` keeps the EngineCore
+      in the same process).
+
+    We try them in that order and return the first one that has
+    ``collective_rpc``. Raises ``TurboQuantVLLMError`` with a helpful
+    message if none match — that's the most likely thing to break on a
+    vLLM version bump, so the message lists the paths we tried.
     """
     engine = getattr(llm, "llm_engine", None)
     if engine is None:
@@ -69,16 +98,40 @@ def _resolve_executor(llm: Any) -> Any:
             "(synchronous engine). AsyncEngine is not yet supported."
         )
 
-    core = getattr(engine, "engine_core", engine)
-    inner = getattr(core, "engine_core", core)
-    executor = getattr(inner, "model_executor", None)
-    if executor is None:
+    candidates = []
+
+    # 1. Top-level shortcut. The LLMEngine forwards collective_rpc to whichever
+    #    process owns the workers, so this works for both in-proc and MP.
+    if hasattr(engine, "collective_rpc"):
+        candidates.append(("llm.llm_engine", engine))
+
+    # 2. Direct model_executor attribute on the engine (in-proc shortcut).
+    direct_executor = getattr(engine, "model_executor", None)
+    if direct_executor is not None and hasattr(direct_executor, "collective_rpc"):
+        candidates.append(("llm.llm_engine.model_executor", direct_executor))
+
+    # 3. Legacy deep path (in-proc multiprocessing disabled).
+    core = getattr(engine, "engine_core", None)
+    if core is not None:
+        inner = getattr(core, "engine_core", core)
+        deep_executor = getattr(inner, "model_executor", None)
+        if deep_executor is not None and hasattr(deep_executor, "collective_rpc"):
+            candidates.append(
+                ("llm.llm_engine.engine_core.engine_core.model_executor", deep_executor)
+            )
+
+    if not candidates:
         raise TurboQuantVLLMError(
-            "Could not locate model_executor on the vLLM engine. "
-            "TurboQuant currently targets vLLM v1 internals "
-            "(llm.llm_engine.engine_core.engine_core.model_executor). "
+            "Could not locate a collective_rpc-capable handle on the vLLM "
+            "engine. Tried: llm.llm_engine.collective_rpc, "
+            "llm.llm_engine.model_executor, "
+            "llm.llm_engine.engine_core.engine_core.model_executor. "
             "Your vLLM version may be unsupported."
         )
+
+    name, executor = candidates[0]
+    logger.debug("[TurboQuant] resolved RPC handle via %s (%s)",
+                 name, type(executor).__name__)
 
     if not hasattr(executor, "collective_rpc"):
         raise TurboQuantVLLMError(
@@ -114,6 +167,7 @@ def enable_turboquant(
     initial_layers_count: int = 4,
     initial_layers_key_bits: Optional[int] = None,
     mode: str = "capture_only",
+    allow_insecure_serialization: bool = True,
 ) -> dict:
     """Install TurboQuant hooks on every worker behind ``llm``.
 
@@ -135,6 +189,13 @@ def enable_turboquant(
     mode
         One of ``"off"``, ``"capture_only"``, ``"hybrid"``, ``"full_tq"``.
         Legacy names (``shadow``, ``accumulate``, ``active``) are accepted.
+    allow_insecure_serialization
+        Controls whether ``import turboquant.vllm`` is allowed to set
+        ``VLLM_ALLOW_INSECURE_SERIALIZATION=1`` (which it does by default,
+        because vLLM 0.17.x's default RPC serializer can't transport our
+        installer closure). Pass ``False`` and ``enable_turboquant`` will
+        raise instead of proceeding when the env var isn't set, so you can
+        control the flag explicitly.
 
     Returns
     -------
@@ -146,6 +207,17 @@ def enable_turboquant(
             f"Unknown TurboQuant mode {mode!r}; valid: {VALID_MODES}"
         )
     internal_mode = _USER_MODE_TO_INTERNAL[mode]
+
+    if not allow_insecure_serialization and \
+            not os.environ.get("VLLM_ALLOW_INSECURE_SERIALIZATION"):
+        raise TurboQuantVLLMError(
+            "VLLM_ALLOW_INSECURE_SERIALIZATION is not set, but "
+            "allow_insecure_serialization=False was passed. vLLM v1 "
+            "collective_rpc on 0.17.x rejects closures without that flag. "
+            "Set the env var before constructing vllm.LLM(...) to enable "
+            "TurboQuant, or import turboquant.vllm before vllm to let it "
+            "set the flag automatically at import time."
+        )
 
     vllm_version = _check_vllm_version()
     executor = _resolve_executor(llm)

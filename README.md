@@ -193,6 +193,12 @@ MODEL=meta-llama/Llama-3.2-1B-Instruct python quickstart.py
 ### Programmatic use
 
 ```python
+# Import turboquant.vllm BEFORE vllm.LLM. Importing it sets
+# VLLM_ALLOW_INSECURE_SERIALIZATION=1 (if not already set), which vLLM 0.17.x
+# requires so collective_rpc can transport our installer closure to worker
+# subprocesses. The env var has to be present when the engine subprocess is
+# forked, i.e. *before* LLM(...).
+import turboquant.vllm
 from vllm import LLM, SamplingParams
 from turboquant.vllm import enable_turboquant, free_kv_cache, get_stats
 
