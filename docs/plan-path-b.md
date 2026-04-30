@@ -135,27 +135,62 @@ a recipe.
 
 ### Sprint 1 — Capture survives `torch.compile` (3–5 days)
 
+**History.** This sprint was rescoped on 2026-04-29 after S1.1 / S1.2
+recon (commits [`8338f18`](https://github.com/pitcany/vllm-turboquant/commit/8338f18)
+and [`93304a0`](https://github.com/pitcany/vllm-turboquant/commit/93304a0))
+showed the original framing of F1 was wrong. See
+`docs/integration-state.md` § "S1.1 — `torch.library` override … is
+structurally blocked", § "S1.2 — `register_forward_pre_hook` fires zero
+times after compilation", and § "F1bis — F1 is overstated; default
+compile + no-prefix-cache *does* capture the prefill". The reframed
+findings drive everything below; do not read this section against the
+pre-2026-04-29 version of `s0_compiled.log` alone.
+
 **Entry condition.** `docs/integration-state.md` names a specific
-line in `s0_compiled.log` as the immediate cause of capture failure.
+line in `s0_compiled.log` (and now `s1_probe_pre_hook.log`) as the
+immediate cause of capture failure. As of 2026-04-29 the cause is
+`vllm/compilation/cuda_graph.py:208–323` — `CUDAGraphWrapper.__call__`
+captures `runnable` once and replays via `cudagraph.replay()`, which
+bypasses **all** Python-level hooks (custom op overrides, monkey-patches,
+`register_forward_pre_hook`) inside the captured region. This is why both
+1A and 1B fail by construction in FULL CUDAGraph mode.
 
 **Tasks.**
 
-- **S1.1** Try **1B (`torch.library` override of
-  `vllm::unified_kv_cache_update`)**. Register an impl that calls the
-  original and writes a copy into TQ's store. Validate by capturing
-  `s1_compiled.log` and grepping for our trace line — must appear
-  ≥ 256 times for a 270-prefill + 64-decode workload.
+- **S1.1** *Closed (failed).* Tried **1B (`torch.library` override of
+  `vllm::unified_kv_cache_update`)**: blocked by torch's "kernel
+  already registered" invariant on `(op, CUDA)`, no public deregister
+  API. Even if it had registered, the override would be Python-level
+  and would not survive FULL CUDAGraph replay. See
+  `docs/integration-state.md` § "S1.1 …".
 
-- **S1.2** If 1B is blocked by `torch.library` re-registration
-  conflict (document the conflict in `integration-state.md` first),
-  fall back to **1A (forward pre-hooks)**. Measure compile-mode
-  tok/s impact; the gate is **≥ 0.7× raw vLLM tok/s** on
-  `Llama-3.2-1B-Instruct` at 4k context. If 1A regresses below that,
-  abandon and try 1C.
+- **S1.2** *Closed (failed).* Tried **1A (forward pre-hooks)** via
+  `attn_module.register_forward_pre_hook(...)` on the `Attention`
+  `nn.Module`. Empirical result on default-compile + `prefix=OFF`
+  workload: pre-hook fires **0 times** (`docs/traces/s1_probe_pre_hook.log`,
+  `grep -c 'pre_hook fired'` → 0). Cause: `torch._dynamo.optimize`
+  inlines `Attention.forward` past `nn.Module.__call__`'s hook
+  iteration; hooks registered after the model has been compiled are
+  never read. See `docs/integration-state.md` § "S1.2 …".
 
-- **S1.3** If 1A fails the gate, escalate to **1C (paged-cache
-  reader)**. Use `ingest_prefill_from_paged_cache` (already
-  scaffolded) per `step()`. Document why earlier paths failed.
+- **S1.3** *Active.* Land **1C (paged-cache reader)** as the only
+  approach that survives FULL CUDAGraph by construction (it doesn't
+  hook anything inside the captured region — it reads the paged
+  `kv_cache` tensor *after* `model_runner.execute_model()` has
+  returned, when Python is running again every step). Concretely:
+  - install a per-`execute_model`-step Python callback (worker-side,
+    via `collective_rpc` like the existing installer) that, for each
+    layer in `model_runner._tq_layer_states`, reads the slice of the
+    paged `kv_cache` tensor written this step (using `slot_mapping`
+    from the just-completed `ForwardContext`) and feeds it into
+    `state.engine.ingest_decode` / `ingest_prefill`;
+  - retire the now-redundant per-token decode part of the existing
+    `do_kv_cache_update` monkey-patch (keep the prefill path, since
+    prefill runs PIECEWISE per `s0_compiled.log:40` and the patch fires
+    cleanly there);
+  - keep the decode-bypass detection: if the post-step delta is empty
+    when it shouldn't be (e.g., decode token count not zero but no
+    slots written), raise rather than silently no-op.
 
 - **S1.4** Update `tests/test_vllm_smoke.py` with a CUDA-only test
   asserting captured token count == prefill+decode tokens for a
@@ -163,15 +198,42 @@ line in `s0_compiled.log` as the immediate cause of capture failure.
 
 **Acceptance criteria.**
 
-- `s1_compiled.log` shows capture firing per-token under default vLLM
-  config (no `enforce_eager`).
-- Captured token count matches input+output tokens within 1%
-  (allowing for the warmup/profile pass).
-- `tests/test_vllm_smoke.py` CUDA test passes.
-- Compile-mode tok/s on `Llama-3.2-1B-Instruct` at 4k context ≥ 0.7×
-  raw baseline (measured, logged in PR).
+- A new `s1_compiled.log` (default compile, `prefix=OFF`,
+  `MODE=hybrid LONG_PROMPT=1 BUFFER_SIZE=16 MAX_TOKENS=64`) shows
+  **TQ store grows by ≥ 64 tokens during decode** — measured by the
+  delta between `total_compressed_tokens + total_buffered_tokens` at
+  end-of-prefill vs. end-of-run. Today's
+  `docs/traces/s1_probe_pre_hook.log:132` measures the prefill-only
+  baseline at 226 (210 + 16); the post-S1.3 trace must read ≥ 290.
+  *(Old criterion: "capture firing per-token under default vLLM
+  config (no `enforce_eager`)" — retired because under FULL CUDAGraph
+  no hook-based capture can fire per-token by construction; the
+  post-step paged-cache reader doesn't show up as a per-token Python
+  trace line either.)*
+- A new TQ-vs-baseline correctness measurement on the same
+  Qwen2.5-0.5B workload: top-1 token agreement ≥ 95% on the 64-decode
+  output, evidenced by the same `s1_compiled.log` capturing both
+  passes' tokenised output. *(Pre-S1.3 it's trivially 100% because the
+  hybrid-compressed branch is never entered; post-S1.3 the branch can
+  be entered, and we need to confirm it doesn't degrade output
+  byte-for-byte before Sprint 3 takes over the > 95% bar on Llama.)*
+- `tests/test_vllm_smoke.py` CUDA test passes (asserting captured
+  token count ≈ prefill+decode tokens).
+- Compile-mode tok/s on `Llama-3.2-1B-Instruct` at 4k context
+  ≥ 0.7× raw baseline (measured, logged in PR). 1C reads from the
+  already-existing paged `kv_cache` tensor — no extra kernel launches
+  inside the CUDA graph — so the tok/s hit should be small.
 - `docs/integration-state.md` updated with S1's before/after trace
-  lines.
+  lines, and the existing F1 section flagged as superseded by F1bis
+  rather than left contradicting the new evidence.
+
+**Stop-loss for this sprint (refined).** If 1C also fails to grow the
+TQ store during decode (e.g., the post-`execute_model` callback can't
+get a usable `slot_mapping` for the last step, or the paged
+`kv_cache[i]` already moved on by the time the callback runs), the
+integration approach itself is wrong; escalate to §5 ("re-architect TQ
+as a separate inference engine, or as a vLLM plugin via the upstream
+plugin surface, not a monkey-patch").
 
 ---
 
@@ -337,4 +399,7 @@ It is **not** updated by:
 
 ---
 
-*Last updated: 2026-04-29 (initial draft).*
+*Last updated: 2026-04-29 (initial draft + same-day Sprint 1 rescope
+after S1.1 / S1.2 recon: 1B blocked structurally, 1A blocked
+empirically, S1.3 / 1C now active; F1 reframed as F1bis in
+`docs/integration-state.md`).*
