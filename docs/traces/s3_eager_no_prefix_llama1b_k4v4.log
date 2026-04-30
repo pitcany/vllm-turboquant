@@ -1,0 +1,33 @@
+# tq probe artefact (S0.4 of docs/plan-path-b.md)
+# model=meta-llama/Llama-3.2-1B-Instruct
+# max_tokens=256
+# buffer_size=16
+# key_bits=4
+# value_bits=4
+# threshold=0.0
+# baseline_len=256
+# tq_len=256
+# compared=256
+# top1_agreement=0.0273
+# first_divergence=6
+# baseline_tokens_head=[358, 1390, 311, 1518, 279, 5219, 382, 567, 15166, 220, 16, 25, 46551, 279, 20044, 29696, 198, 791, 6636, 304, 43678, 45478, 11383, 17610, 315, 264, 743, 315, 5044, 10215, 11, 1855]
+# tq_tokens_head=[358, 1390, 311, 1518, 279, 5219, 13, 358, 1390, 311, 1518, 279, 3135, 13, 358, 1390, 311, 1518, 279, 6696, 65039, 13, 358, 1390, 311, 1518, 279, 6696, 65039, 304, 1957, 382]
+
+=== captured stderr ===
+
+=== trimmed: full trace exceeds plan §2 5MB total budget ===
+=== first 5 hybrid_segments lines (proves hybrid_compressed branch fired): ===
+(EngineCore_DP0 pid=1005987) [TQ-TRACE] turboquant.trace pid=1005987 layer=0 hybrid_segments num_paged=1 num_tq=211 num_ring=16
+(EngineCore_DP0 pid=1005987) [TQ-TRACE] turboquant.trace pid=1005987 layer=1 hybrid_segments num_paged=1 num_tq=211 num_ring=16
+(EngineCore_DP0 pid=1005987) [TQ-TRACE] turboquant.trace pid=1005987 layer=2 hybrid_segments num_paged=1 num_tq=211 num_ring=16
+(EngineCore_DP0 pid=1005987) [TQ-TRACE] turboquant.trace pid=1005987 layer=3 hybrid_segments num_paged=1 num_tq=211 num_ring=16
+(EngineCore_DP0 pid=1005987) [TQ-TRACE] turboquant.trace pid=1005987 layer=4 hybrid_segments num_paged=1 num_tq=211 num_ring=16
+
+=== last 5 hybrid_segments lines (proves it kept firing through end of decode): ===
+(EngineCore_DP0 pid=1005987) [TQ-TRACE] turboquant.trace pid=1005987 layer=11 hybrid_segments num_paged=1 num_tq=467 num_ring=14
+(EngineCore_DP0 pid=1005987) [TQ-TRACE] turboquant.trace pid=1005987 layer=12 hybrid_segments num_paged=1 num_tq=467 num_ring=14
+(EngineCore_DP0 pid=1005987) [TQ-TRACE] turboquant.trace pid=1005987 layer=13 hybrid_segments num_paged=1 num_tq=467 num_ring=14
+(EngineCore_DP0 pid=1005987) [TQ-TRACE] turboquant.trace pid=1005987 layer=14 hybrid_segments num_paged=1 num_tq=467 num_ring=14
+(EngineCore_DP0 pid=1005987) [TQ-TRACE] turboquant.trace pid=1005987 layer=15 hybrid_segments num_paged=1 num_tq=467 num_ring=14
+
+=== TQ stats / output comparison (last 30 stderr lines): ===

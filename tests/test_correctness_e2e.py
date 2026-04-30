@@ -77,6 +77,12 @@ AGREEMENT_THRESHOLD = float(os.environ.get("TQ_E2E_THRESHOLD", "0.95"))
 # every call, masking any failure on Llama and producing a vacuous 100%
 # agreement on Qwen. 16 matches the canonical Sprint 1 workload.
 BUFFER_SIZE = int(os.environ.get("TQ_E2E_BUFFER_SIZE", "16"))
+# Bit budget — exposed as env vars so the docs/plan-path-b.md §5 escalation
+# branches ("escalate to value_bits=4 …") can be measured without editing
+# the test. Defaults match the plan §2 verification config (3-bit key,
+# 2-bit value).
+KEY_BITS = int(os.environ.get("TQ_E2E_KEY_BITS", "3"))
+VALUE_BITS = int(os.environ.get("TQ_E2E_VALUE_BITS", "2"))
 # A long prompt (≈ 226 tokens on Qwen-0.5B's tokenizer) so prefill
 # > MIN_HISTORY_FOR_TQ even with prefix caching off. Same prompt as
 # quickstart.py's LONG_PROMPT and tests/test_vllm_smoke.py's S1.4 smoke,
@@ -147,8 +153,8 @@ def test_top1_agreement_baseline_vs_tq_hybrid(capfd) -> None:
 
     enable_turboquant(
         llm,
-        key_bits=3,
-        value_bits=2,
+        key_bits=KEY_BITS,
+        value_bits=VALUE_BITS,
         buffer_size=BUFFER_SIZE,
         mode="hybrid",
     )
@@ -174,6 +180,8 @@ def test_top1_agreement_baseline_vs_tq_hybrid(capfd) -> None:
         f"# model={MODEL}\n"
         f"# max_tokens={MAX_TOKENS}\n"
         f"# buffer_size={BUFFER_SIZE}\n"
+        f"# key_bits={KEY_BITS}\n"
+        f"# value_bits={VALUE_BITS}\n"
         f"# threshold={AGREEMENT_THRESHOLD}\n"
         f"# baseline_len={len(baseline_tokens)}\n"
         f"# tq_len={len(tq_tokens)}\n"
@@ -188,7 +196,8 @@ def test_top1_agreement_baseline_vs_tq_hybrid(capfd) -> None:
 
     # Re-emit a single summary line on stderr for human readers under -s.
     print(
-        f"[tq-e2e] model={MODEL} buffer_size={BUFFER_SIZE} compared={n} "
+        f"[tq-e2e] model={MODEL} key_bits={KEY_BITS} value_bits={VALUE_BITS} "
+        f"buffer_size={BUFFER_SIZE} compared={n} "
         f"top1_agreement={agreement:.4f} first_divergence={first_div} "
         f"threshold={AGREEMENT_THRESHOLD} probe={probe_path}",
         file=sys.stderr,

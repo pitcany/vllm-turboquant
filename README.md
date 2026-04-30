@@ -20,6 +20,13 @@ Implementation of TurboQuant KV cache compression (ICLR 2026, arXiv:2504.19874) 
 >
 > **Plan**: see [`docs/plan-path-b.md`](docs/plan-path-b.md). That document is the contract for the next phase of work — working principles, sprint plan, acceptance criteria per sprint, and definitions-of-done for each finding above.
 >
+> ### Status update — Sprints 1–3 complete (2026-04-30)
+>
+> - **F1 closed** by [`304ba1f`](https://github.com/pitcany/vllm-turboquant/commit/304ba1f) (Sprint 1 / S1.3 / 1C — post-`execute_model` paged-cache reader survives FULL CUDAGraph). Default-compile + `enable_prefix_caching=False` now captures all prefill + all decode K/Vs (`docs/traces/s1_compiled.log`).
+> - **F2 closed** by [`4c902f1`](https://github.com/pitcany/vllm-turboquant/commit/4c902f1) (Sprint 2 / S2.1). `enable_turboquant` now raises a typed error when prefix caching is on with `mode != "off"`. Capture-on-cache-hit is filed as a separate ticket.
+> - **F3 half-closed.** Combiner rewrite landed in [`0bf9510`](https://github.com/pitcany/vllm-turboquant/commit/0bf9510) (Sprint 3 / S3.2): hybrid attention now folds three KV segments (`kv_paged ∪ kv_tq ∪ kv_ring`) via streaming online softmax, the degenerate `quant, quant, quant` output from issue (3) above is gone, and 6 unit tests prove the math is identical to a single softmax over the concatenation. **But:** the empirical top-1-agreement bar on `Llama-3.2-1B-Instruct` is *not* met at any bit budget tried (3-bit/2-bit → 7.69%, 3-bit/4-bit → 0.39%, 4-bit/4-bit → 2.73% — see [`docs/integration-state.md`](docs/integration-state.md) § "S3.3 follow-up"). The plan's §5 second-bullet stop-loss is engaged.
+> - **Pivot for Sprint 4.** Capture-only + `free_kv_cache` for memory-only wins (plan §5 third bullet). The "Verified configuration" section that replaces this ⚠️ notice will advertise `mode="capture_only"`, with `mode="hybrid"` retained as a research-mode setting and a fused-Triton-kernel target for Sprint 5.
+>
 > The rest of this README is preserved for reference. Adjust your expectations accordingly.
 
 ## Benchmark Results (NOT CURRENTLY REPRODUCIBLE — see notice above)

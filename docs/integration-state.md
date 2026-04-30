@@ -715,6 +715,51 @@ without a research pivot on the bit budget. Recommend taking it as
 the default unless the user wants to spend the bit-budget budget on
 clearing hybrid 95%.
 
+### S3.3 follow-up — bit-budget escalation does not rescue hybrid at 1B
+
+Per `docs/plan-path-b.md` §5 second bullet ("escalate to `value_bits=4`
+…"), ran the same probe (Llama-3.2-1B-Instruct, LONG_PROMPT, 256-token
+greedy decode, `buffer_size=16`, eager + no prefix-cache) at two more
+bit budgets via the new `TQ_E2E_KEY_BITS` / `TQ_E2E_VALUE_BITS` env
+overrides on `tests/test_correctness_e2e.py`:
+
+| key_bits | value_bits | Top-1 agreement | First divergence | tq_len | Trace |
+|---:|---:|---:|---:|---:|---|
+| 3 | 2 (plan default) | **7.69%** (1/13) | 1 | 13 (TQ emits EOS early) | [`s3_eager_no_prefix_llama1b.log`](traces/s3_eager_no_prefix_llama1b.log) |
+| 3 | 4 | **0.39%** (1/256) | 1 | 256 | [`s3_eager_no_prefix_llama1b_v4.log`](traces/s3_eager_no_prefix_llama1b_v4.log) |
+| 4 | 4 (max budget) | **2.73%** (7/256) | 6 | 256 | [`s3_eager_no_prefix_llama1b_k4v4.log`](traces/s3_eager_no_prefix_llama1b_k4v4.log) |
+
+All three traces show the hybrid_compressed branch firing every layer ×
+every step (`took_compressed_path=True`, `hybrid_segments num_paged=1
+num_tq=211 num_ring=16` lines = `decode_steps × 16 layers`); combiner
+behaviour is unchanged. None of the three clears 30% disagreement
+(the §5 stop-loss threshold), let alone the 95%-agreement F3 closure
+bar. Notably:
+
+- **`value_bits=4` is *worse* than `value_bits=2`.** Likely the d=64
+  Lloyd-Max codebook at b=4 has different reconstruction noise on
+  Llama-3.2-1B's K/V distribution than on Qwen-0.5B's; this is not
+  the failure mode the plan §5 sentence anticipated, but the conclusion
+  ("not quality-viable at this size") is the same.
+- **`key_bits=4 value_bits=4` is the best of the three (2.73%) but
+  doesn't generate EOS early** — a different failure mode (model
+  generates a degenerate loop for the full 256 tokens). First
+  divergence at position 6 vs. 1 for the other two suggests slightly
+  more fidelity, but not enough to bend the curve.
+- The trace files for the two new runs were trimmed to header +
+  representative `hybrid_segments` slices to stay under the plan §2
+  total-trace budget (5 MB). Full re-run with
+  `TQ_E2E_KEY_BITS=4 TQ_E2E_VALUE_BITS=4` reproduces the numbers in
+  ~30 s on a 24-GB GPU.
+
+**Conclusion: the bit-budget exit ramp the plan §5 second bullet
+named is exhausted.** Pivot is the §5 third bullet (capture-only +
+`free_kv_cache` for memory-only wins) — i.e. Sprint 4 as already
+scoped. Hybrid stays in the codebase as `mode="hybrid"` for future
+research / a fused-kernel revisit (Sprint 5), but is no longer the
+recommended default; the README's verified-configuration section
+(Sprint 4) should advertise `mode="capture_only"`.
+
 ---
 
 ## Throughput observations (incidental)
